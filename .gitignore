@@ -1,0 +1,50 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go-specific
+*.go
+*.mod
+*.sum
+bin/
+pkg/
+
+# IDE-specific
+tmp/
+*.tmp
+*.swp
+*.swo
+
+# Logs and databases
+*.log
+*.db
+*.sqlite
+
+# Environment-specific
+.env
+.env.local
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+out/
+
+# Dependency directories
+node_modules/
+vendor/
+
+# Test and coverage
+coverage/
+*.cover
+
+# Miscellaneous
+*.bak
+*.backup
+*.orig
+*.old
