@@ -17,9 +17,25 @@ func NewLogCommand(objectDatabase *snapshot.ObjectDatabase) *LogCommand {
 
 // Run executes the log command
 func (lc *LogCommand) Run(args []string) error {
-	// TODO: Implement log command
+	if lc.ObjectDatabase == nil {
+		return fmt.Errorf("object database not initialized")
+	}
+
+	// Get all snapshots from database
+	snapshots, err := lc.ObjectDatabase.GetAllSnapshots()
+	if err != nil {
+		return fmt.Errorf("failed to retrieve snapshots: %v", err)
+	}
+
+	if len(snapshots) == 0 {
+		fmt.Println("No commits found.")
+		return nil
+	}
+
 	fmt.Println("Commit history:")
-	fmt.Println("  - Initial commit")
+	for _, snapshot := range snapshots {
+		fmt.Printf("  - %s\n", snapshot.RootHash)
+	}
 
 	return nil
 }

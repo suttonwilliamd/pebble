@@ -64,10 +64,10 @@ func (od *ObjectDatabase) initializeDatabase() error {
 	);
 
 	CREATE TABLE IF NOT EXISTS snapshot_objects (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		snapshot_id INTEGER NOT NULL,
 		object_hash TEXT NOT NULL,
 		path TEXT NOT NULL,
-		PRIMARY KEY (snapshot_id, object_hash),
 		FOREIGN KEY (snapshot_id) REFERENCES snapshots(id),
 		FOREIGN KEY (object_hash) REFERENCES objects(hash)
 	);`
@@ -135,4 +135,26 @@ func (od *ObjectDatabase) GetSnapshotObjects(snapshotID int) ([]SnapshotObject, 
 	}
 
 	return objects, nil
+}
+
+// GetAllSnapshots retrieves all snapshots from the database
+func (od *ObjectDatabase) GetAllSnapshots() ([]Snapshot, error) {
+	query := `SELECT id, timestamp, root_hash FROM snapshots ORDER BY timestamp DESC`
+	rows, err := od.DB.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var snapshots []Snapshot
+	for rows.Next() {
+		var snapshot Snapshot
+		err := rows.Scan(&snapshot.ID, &snapshot.Timestamp, &snapshot.RootHash)
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+
+	return snapshots, nil
 }

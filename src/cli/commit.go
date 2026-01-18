@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"pebble/src/snapshot"
+	"time"
 )
 
 // CommitCommand represents the `pebble commit` command
@@ -51,10 +52,29 @@ func (cc *CommitCommand) Run(args []string) error {
 		metadata = append(metadata, metadataItem)
 	}
 
-	// Store snapshot
-	// TODO: Implement snapshot storage
-	fmt.Printf("Committed snapshot with message: %s\n", message)
+	// Generate a unique root hash for the snapshot
+	rootHash := fmt.Sprintf("snapshot-%d", time.Now().UnixNano())
 
-	fmt.Printf("Committed snapshot with message: %s\n", message)
+	// Check if there are any files to commit
+	if len(files) == 0 {
+		return fmt.Errorf("no files to commit")
+	}
+
+	// Store snapshot in database
+	timestamp := time.Now().Unix()
+	snapshotID, err := cc.ObjectDatabase.InsertSnapshot(timestamp, rootHash)
+	if err != nil {
+		return fmt.Errorf("failed to store snapshot: %v", err)
+	}
+
+	// Store files in snapshot
+	for _, file := range files {
+		err := cc.ObjectDatabase.InsertSnapshotObject(snapshotID, file.Hash, file.Path)
+		if err != nil {
+			return fmt.Errorf("failed to store snapshot object: %v", err)
+		}
+	}
+
+	fmt.Printf("Committed snapshot %d: %s\n", snapshotID, message)
 	return nil
 }

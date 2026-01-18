@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -61,33 +62,46 @@ func (fig *FileIndexGenerator) TraverseDirectory() ([]FileMetadata, error) {
 	return fileIndex, nil
 }
 
+// shouldSkipDirectory checks if a path should be skipped
+func shouldSkipDirectory(path string) bool {
+	// Skip any path starting with . (hidden files/directories)
+	// Handle both Unix and Windows separators
+	cleanPath := filepath.ToSlash(path) // Normalize to forward slashes
+	return strings.HasPrefix(cleanPath, ".")
+}
+
 // GenerateIndex creates a FileIndex with content hashes for all files
 func (fig *FileIndexGenerator) GenerateIndex() ([]FileIndex, error) {
-	var fileIndex []FileIndex
+	var indexList []FileIndex
 
 	err := filepath.Walk(fig.RootDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		if !info.IsDir() {
-			relativePath, err := filepath.Rel(fig.RootDir, path)
-			if err != nil {
-				return err
-			}
+		relativePath, err := filepath.Rel(fig.RootDir, path)
+		if err != nil {
+			return err
+		}
 
+		// Skip directories and files in skip directories (but not root)
+		if info.IsDir() && shouldSkipDirectory(relativePath) && relativePath != "." {
+			return filepath.SkipDir
+		}
+
+		if !info.IsDir() && !shouldSkipDirectory(relativePath) {
 			// Calculate content hash
 			hash, err := fig.calculateFileHash(path)
 			if err != nil {
 				return err
 			}
 
-			fileIndexEntry := FileIndex{
+			indexEntry := FileIndex{
 				Path: relativePath,
 				Hash: hash,
 			}
 
-			fileIndex = append(fileIndex, fileIndexEntry)
+			indexList = append(indexList, indexEntry)
 		}
 
 		return nil
@@ -97,7 +111,7 @@ func (fig *FileIndexGenerator) GenerateIndex() ([]FileIndex, error) {
 		return nil, err
 	}
 
-	return fileIndex, nil
+	return indexList, nil
 }
 
 // calculateFileHash computes SHA256 hash of file content
