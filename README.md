@@ -67,7 +67,7 @@ Pebble + ROCK is a modern version control system with first-class binary asset h
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/pebble.git
+git clone https://github.com/suttonwilliamd/pebble.git
 cd pebble
 ```
 
@@ -118,10 +118,6 @@ pebble push origin main
 ## Contributing
 
 Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this project.
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE.md](LICENSE.md) file for details.
 
 ## Acknowledgments
 
