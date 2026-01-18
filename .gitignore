@@ -4,10 +4,7 @@
 *.so
 *.dylib
 
-# Go-specific
-*.go
-*.mod
-*.sum
+# Go-specific (but not source files)
 bin/
 pkg/
 
