@@ -1,0 +1,4 @@
+# Pebble ignore patterns
+.pebble/
+.git/
+*.log

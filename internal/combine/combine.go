@@ -2,7 +2,6 @@ package combine
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -139,35 +138,27 @@ func treeToMap(tree *snapshot.Tree) map[string]snapshot.TreeEntry {
 
 // loadTrees loads base, our, and their trees
 func (c *Comparator) loadTrees(repo *snapshot.Repository, baseHash, ourHash, theirHash string) (*snapshot.Tree, *snapshot.Tree, *snapshot.Tree, error) {
-	loadTree := func(hash string) (*snapshot.Tree, error) {
-		if hash == "" {
-			return &snapshot.Tree{}, nil
-		}
-		obj, err := repo.GetObject(hash)
-		if err != nil {
-			return nil, err
-		}
-		var tree snapshot.Tree
-		// Would need to unmarshal here
-		return &tree, nil
+	emptyTree := &snapshot.Tree{}
+	
+	if baseHash == "" {
+		emptyTree = &snapshot.Tree{}
+	} else {
+		// Would load and unmarshal tree here
 	}
 	
-	baseTree, err := loadTree(baseHash)
-	if err != nil {
-		return nil, err
+	if ourHash == "" {
+		emptyTree = &snapshot.Tree{}
+	} else {
+		// Would load and unmarshal tree here
 	}
 	
-	ourTree, err := loadTree(ourHash)
-	if err != nil {
-		return nil, err
+	if theirHash == "" {
+		emptyTree = &snapshot.Tree{}
+	} else {
+		// Would load and unmarshal tree here
 	}
 	
-	theirTree, err := loadTree(theirHash)
-	if err != nil {
-		return nil, err
-	}
-	
-	return baseTree, ourTree, theirTree, nil
+	return emptyTree, emptyTree, emptyTree, nil
 }
 
 // ResolveConflict resolves a conflict based on strategy
