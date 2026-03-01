@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // ChunkDatabase manages chunk metadata in SQLite
@@ -23,7 +23,7 @@ func NewChunkDatabase(dbPath string) (*ChunkDatabase, error) {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -63,9 +63,9 @@ func (cdb *ChunkDatabase) init() error {
 	);
 
 	-- Index for looking up refs by file
-	CREATE INDEX IF NOT EXISTS idx_chunk_refs_file ON chunk_refs(file	-- Index for_path);
+	CREATE INDEX IF NOT EXISTS idx_chunk_refs_file ON chunk_refs(file_path);
 	
- looking up refs by hash
+	-- Index for looking up refs by hash
 	CREATE INDEX IF NOT EXISTS idx_chunk_refs_hash ON chunk_refs(chunk_hash);
 	`
 
