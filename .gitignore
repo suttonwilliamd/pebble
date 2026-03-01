@@ -5,11 +5,15 @@
 *.dylib
 
 # Go-specific
-*.go
+# DON'T ignore *.go - we need source files!
 *.mod
 *.sum
 bin/
 pkg/
+
+# Test and coverage (compiled tests)
+*.test
+coverage/
 
 # IDE-specific
 tmp/
