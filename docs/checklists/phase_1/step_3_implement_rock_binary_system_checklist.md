@@ -8,22 +8,22 @@ The ROCK Binary System handles binary files efficiently using content-defined ch
 
 ### 3.1 Write Unit Tests for ROCK Binary System Components
 
-- [ ] Define expected behavior for File Analyzer
-- [ ] Define expected behavior for FastCDC Algorithm
+- [x] Define expected behavior for File Analyzer
+- [x] Define expected behavior for FastCDC Algorithm
 - [ ] Define expected behavior for Chunk Generator
-- [ ] Define expected behavior for Chunk Database (SQLite)
-- [ ] Define expected behavior for Reference Manager
-- [ ] Define expected behavior for Deduplication Engine
+- [x] Define expected behavior for Chunk Database (SQLite)
+- [x] Define expected behavior for Reference Manager
+- [x] Define expected behavior for Deduplication Engine
 
 ### 3.2 Implement File Analyzer
 
-- [ ] Analyze binary files
-- [ ] Determine if files are suitable for chunking
+- [x] Analyze binary files
+- [x] Determine if files are suitable for chunking
 
 ### 3.3 Implement FastCDC Algorithm
 
-- [ ] Implement content-defined chunking
-- [ ] Ensure efficient chunking for large binary files
+- [x] Implement content-defined chunking
+- [x] Ensure efficient chunking for large binary files
 
 ### 3.4 Implement Chunk Generator
 
@@ -32,18 +32,18 @@ The ROCK Binary System handles binary files efficiently using content-defined ch
 
 ### 3.5 Implement Chunk Database (SQLite)
 
-- [ ] Store chunk metadata
-- [ ] Store chunk references
+- [x] Store chunk metadata
+- [x] Store chunk references
 
 ### 3.6 Implement Reference Manager
 
-- [ ] Manage references to chunks
-- [ ] Enable deduplication and garbage collection
+- [x] Manage references to chunks
+- [x] Enable deduplication and garbage collection
 
 ### 3.7 Implement Deduplication Engine
 
-- [ ] Identify and remove duplicate chunks
-- [ ] Save storage space
+- [x] Identify and remove duplicate chunks
+- [x] Save storage space
 
 ### 3.8 Run Integration Tests
 
