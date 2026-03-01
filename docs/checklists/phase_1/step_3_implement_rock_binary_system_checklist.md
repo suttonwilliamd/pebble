@@ -27,8 +27,8 @@ The ROCK Binary System handles binary files efficiently using content-defined ch
 
 ### 3.4 Implement Chunk Generator
 
-- [ ] Generate chunks from binary files
-- [ ] Use FastCDC algorithm for chunking
+- [x] Generate chunks from binary files
+- [x] Use FastCDC algorithm for chunking
 
 ### 3.5 Implement Chunk Database (SQLite)
 
