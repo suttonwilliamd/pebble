@@ -1,114 +1,108 @@
 package storage
 
 import (
-	"database/sql"
-	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // Object represents a stored object in the database
 type Object struct {
-	Hash      string
-	Type      string
-	Size      int64
-	CreatedAt time.Time
-	RefCount  int
+	Hash      string    `json:"hash"`
+	Type      string    `json:"type"`
+	Size      int64     `json:"size"`
+	CreatedAt time.Time `json:"created_at"`
+	RefCount  int       `json:"ref_count"`
 }
 
 // Snapshot represents a snapshot record
 type Snapshot struct {
-	Hash      string
-	TreeHash  string
-	Message   string
-	Author    string
-	Email     string
-	Timestamp time.Time
-	ParentHash sql.NullString
+	Hash      string    `json:"hash"`
+	TreeHash  string    `json:"tree_hash"`
+	Message   string    `json:"message"`
+	Author    string    `json:"author"`
+	Email     string    `json:"email"`
+	Timestamp time.Time `json:"timestamp"`
+	ParentHash string   `json:"parent_hash,omitempty"`
 }
 
 // Ref represents a reference (branch/tag)
 type Ref struct {
-	Name      string
-	Hash      string
-	UpdatedAt time.Time
+	Name      string    `json:"name"`
+	Hash      string    `json:"hash"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Storage is the main storage interface
 type Storage struct {
-	db        *sql.DB
+	rootPath   string
 	objectsDir string
-	mu        sync.RWMutex
+	dbPath     string
+	mu         sync.RWMutex
+	objects   map[string]Object
+	snapshots map[string]Snapshot
+	refs      map[string]Ref
 }
 
 // NewStorage creates a new storage instance
 func NewStorage(rootPath string) (*Storage, error) {
 	pebbleDir := filepath.Join(rootPath, ".pebble")
 	objectsDir := filepath.Join(pebbleDir, "objects")
+	dbPath := filepath.Join(pebbleDir, "storage.json")
 	
-	if err := os.MkdirAll(objectsDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create objects dir: %w", err)
-	}
-	
-	dbPath := filepath.Join(pebbleDir, "pebble.db")
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+	for _, dir := range []string{pebbleDir, objectsDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create dir: %w", err)
+		}
 	}
 	
 	storage := &Storage{
-		db:         db,
+		rootPath:   rootPath,
 		objectsDir: objectsDir,
+		dbPath:     dbPath,
+		objects:   make(map[string]Object),
+		snapshots: make(map[string]Snapshot),
+		refs:      make(map[string]Ref),
 	}
 	
-	if err := storage.initSchema(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to initialize schema: %w", err)
-	}
+	// Load existing data
+	storage.load()
 	
 	return storage, nil
 }
 
-// initSchema initializes the database schema
-func (s *Storage) initSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS objects (
-		hash TEXT PRIMARY KEY,
-		type TEXT NOT NULL,
-		size INTEGER NOT NULL,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		ref_count INTEGER DEFAULT 0
-	);
+type storageData struct {
+	Objects   map[string]Object   `json:"objects"`
+	Snapshots map[string]Snapshot `json:"snapshots"`
+	Refs      map[string]Ref     `json:"refs"`
+}
+
+func (s *Storage) load() {
+	if data, err := os.ReadFile(s.dbPath); err == nil {
+		var sd storageData
+		if json.Unmarshal(data, &sd) == nil {
+			s.objects = sd.Objects
+			s.snapshots = sd.Snapshots
+			s.refs = sd.Refs
+		}
+	}
+}
+
+func (s *Storage) save() error {
+	data := storageData{
+		Objects:   s.objects,
+		Snapshots: s.snapshots,
+		Refs:      s.refs,
+	}
 	
-	CREATE TABLE IF NOT EXISTS snapshots (
-		hash TEXT PRIMARY KEY,
-		tree_hash TEXT NOT NULL,
-		message TEXT NOT NULL,
-		author TEXT NOT NULL,
-		email TEXT NOT NULL,
-		timestamp TIMESTAMP NOT NULL,
-		parent_hash TEXT
-	);
-	
-	CREATE TABLE IF NOT EXISTS refs (
-		name TEXT PRIMARY KEY,
-		hash TEXT NOT NULL,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);
-	
-	CREATE INDEX IF NOT EXISTS idx_objects_type ON objects(type);
-	CREATE INDEX IF NOT EXISTS idx_objects_refcount ON objects(ref_count);
-	CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON snapshots(timestamp);
-	CREATE INDEX IF NOT EXISTS idx_refs_updated ON refs(updated_at);
-	`
-	
-	_, err := s.db.Exec(schema)
-	return err
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.dbPath, jsonData, 0644)
 }
 
 // StoreObject stores an object
@@ -116,12 +110,14 @@ func (s *Storage) StoreObject(hash, objType string, size int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO objects (hash, type, size, ref_count)
-		VALUES (?, ?, ?, 1)
-	`, hash, objType, size)
-	
-	return err
+	s.objects[hash] = Object{
+		Hash:      hash,
+		Type:      objType,
+		Size:      size,
+		CreatedAt: time.Now(),
+		RefCount:  1,
+	}
+	return s.save()
 }
 
 // GetObject retrieves an object
@@ -129,20 +125,10 @@ func (s *Storage) GetObject(hash string) (*Object, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	
-	var obj Object
-	err := s.db.QueryRow(`
-		SELECT hash, type, size, created_at, ref_count
-		FROM objects WHERE hash = ?
-	`, hash).Scan(&obj.Hash, &obj.Type, &obj.Size, &obj.CreatedAt, &obj.RefCount)
-	
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("object not found: %s", hash)
+	if obj, exists := s.objects[hash]; exists {
+		return &obj, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	
-	return &obj, nil
+	return nil, fmt.Errorf("object not found: %s", hash)
 }
 
 // IncrementRefCount increments the reference count
@@ -150,10 +136,12 @@ func (s *Storage) IncrementRefCount(hash string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	_, err := s.db.Exec(`
-		UPDATE objects SET ref_count = ref_count + 1 WHERE hash = ?
-	`, hash)
-	return err
+	if obj, exists := s.objects[hash]; exists {
+		obj.RefCount++
+		s.objects[hash] = obj
+		return s.save()
+	}
+	return nil
 }
 
 // DecrementRefCount decrements the reference count
@@ -161,32 +149,25 @@ func (s *Storage) DecrementRefCount(hash string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	_, err := s.db.Exec(`
-		UPDATE objects SET ref_count = ref_count - 1 WHERE hash = ?
-	`, hash)
-	return err
+	if obj, exists := s.objects[hash]; exists {
+		obj.RefCount--
+		s.objects[hash] = obj
+		return s.save()
+	}
+	return nil
 }
 
-// GetUnreferencedObjects returns objects with ref_count = 0
+// GetUnreferencedObjects returns objects with ref_count <= 0
 func (s *Storage) GetUnreferencedObjects() ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	
-	rows, err := s.db.Query(`SELECT hash FROM objects WHERE ref_count <= 0`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	
 	var hashes []string
-	for rows.Next() {
-		var hash string
-		if err := rows.Scan(&hash); err != nil {
-			return nil, err
+	for hash, obj := range s.objects {
+		if obj.RefCount <= 0 {
+			hashes = append(hashes, hash)
 		}
-		hashes = append(hashes, hash)
 	}
-	
 	return hashes, nil
 }
 
@@ -195,12 +176,16 @@ func (s *Storage) StoreSnapshot(hash, treeHash, message, author, email string, t
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	_, err := s.db.Exec(`
-		INSERT INTO snapshots (hash, tree_hash, message, author, email, timestamp, parent_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, hash, treeHash, message, author, email, timestamp, parentHash)
-	
-	return err
+	s.snapshots[hash] = Snapshot{
+		Hash:      hash,
+		TreeHash:  treeHash,
+		Message:   message,
+		Author:    author,
+		Email:     email,
+		Timestamp: timestamp,
+		ParentHash: parentHash,
+	}
+	return s.save()
 }
 
 // GetSnapshot retrieves a snapshot
@@ -208,21 +193,10 @@ func (s *Storage) GetSnapshot(hash string) (*Snapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	
-	var snap Snapshot
-	err := s.db.QueryRow(`
-		SELECT hash, tree_hash, message, author, email, timestamp, parent_hash
-		FROM snapshots WHERE hash = ?
-	`, hash).Scan(&snap.Hash, &snap.TreeHash, &snap.Message, &snap.Author, 
-		&snap.Email, &snap.Timestamp, &snap.ParentHash)
-	
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("snapshot not found: %s", hash)
+	if snap, exists := s.snapshots[hash]; exists {
+		return &snap, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	
-	return &snap, nil
+	return nil, fmt.Errorf("snapshot not found: %s", hash)
 }
 
 // GetSnapshots returns all snapshots
@@ -230,30 +204,25 @@ func (s *Storage) GetSnapshots(limit int) ([]Snapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	
-	query := `SELECT hash, tree_hash, message, author, email, timestamp, parent_hash
-		FROM snapshots ORDER BY timestamp DESC`
-	
-	if limit > 0 {
-		query += fmt.Sprintf(" LIMIT %d", limit)
+	var snaps []Snapshot
+	for _, snap := range s.snapshots {
+		snaps = append(snaps, snap)
 	}
 	
-	rows, err := s.db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	
-	var snapshots []Snapshot
-	for rows.Next() {
-		var snap Snapshot
-		if err := rows.Scan(&snap.Hash, &snap.TreeHash, &snap.Message, 
-			&snap.Author, &snap.Email, &snap.Timestamp, &snap.ParentHash); err != nil {
-			return nil, err
+	// Sort by timestamp descending
+	for i := 0; i < len(snaps)-1; i++ {
+		for j := i + 1; j < len(snaps); j++ {
+			if snaps[j].Timestamp.After(snaps[i].Timestamp) {
+				snaps[i], snaps[j] = snaps[j], snaps[i]
+			}
 		}
-		snapshots = append(snapshots, snap)
 	}
 	
-	return snapshots, nil
+	if limit > 0 && len(snaps) > limit {
+		snaps = snaps[:limit]
+	}
+	
+	return snaps, nil
 }
 
 // SetRef sets a reference
@@ -261,12 +230,12 @@ func (s *Storage) SetRef(name, hash string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO refs (name, hash, updated_at)
-		VALUES (?, ?, CURRENT_TIMESTAMP)
-	`, name, hash)
-	
-	return err
+	s.refs[name] = Ref{
+		Name:      name,
+		Hash:      hash,
+		UpdatedAt: time.Now(),
+	}
+	return s.save()
 }
 
 // GetRef retrieves a reference
@@ -274,17 +243,10 @@ func (s *Storage) GetRef(name string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	
-	var hash string
-	err := s.db.QueryRow(`SELECT hash FROM refs WHERE name = ?`, name).Scan(&hash)
-	
-	if err == sql.ErrNoRows {
-		return "", nil
+	if ref, exists := s.refs[name]; exists {
+		return ref.Hash, nil
 	}
-	if err != nil {
-		return "", err
-	}
-	
-	return hash, nil
+	return "", nil
 }
 
 // GetRefs returns all references
@@ -292,21 +254,10 @@ func (s *Storage) GetRefs() ([]Ref, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	
-	rows, err := s.db.Query(`SELECT name, hash, updated_at FROM refs ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	
 	var refs []Ref
-	for rows.Next() {
-		var ref Ref
-		if err := rows.Scan(&ref.Name, &ref.Hash, &ref.UpdatedAt); err != nil {
-			return nil, err
-		}
+	for _, ref := range s.refs {
 		refs = append(refs, ref)
 	}
-	
 	return refs, nil
 }
 
@@ -314,12 +265,10 @@ func (s *Storage) GetRefs() ([]Ref, error) {
 func (s *Storage) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.db.Close()
+	return s.save()
 }
 
-// ObjectHashFromBytes computes the hash of bytes
-func ObjectHashFromBytes(data []byte) string {
-	// Using SHA-256 (in production, would use a proper hash)
-	// For now, we'll use a simple hex encoding
-	return hex.EncodeToString(data[:32])
+// ObjectsDir returns the objects directory path
+func (s *Storage) ObjectsDir() string {
+	return s.objectsDir
 }
