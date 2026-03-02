@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"github.com/suttonwilliamd/pebble/internal/remote"
 	"github.com/suttonwilliamd/pebble/internal/snapshot"
 )
 
@@ -26,6 +28,10 @@ func main() {
 		handleLog(args)
 	case "status":
 		handleStatus(args)
+	case "push":
+		handlePush(args)
+	case "pull":
+		handlePull(args)
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -234,4 +240,117 @@ func handleStatus(args []string) {
 	fmt.Printf("On branch main\n")
 	fmt.Printf("Index hash: %s\n", index.Hash)
 	fmt.Printf("Files tracked: %d\n", len(index.Entries))
+}
+
+func handlePush(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: pebble push <remote-url> [token]")
+		os.Exit(1)
+	}
+
+	remoteURL := args[0]
+	token := ""
+	if len(args) > 1 {
+		token = args[1]
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	repo, err := snapshot.NewRepository(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Get current ref
+	headRef, _ := repo.GetHead()
+	commitHash, _ := repo.GetRef(headRef)
+
+	if commitHash == "" {
+		fmt.Println("Nothing to push - no commits")
+		return
+	}
+
+	// Create client
+	auth := remote.Auth{Token: token}
+	client := remote.NewClient(remoteURL, auth)
+
+	// Collect objects to push
+	objects := make(map[string][]byte)
+	
+	// Get commit object
+	commitObj, err := repo.GetObject(commitHash)
+	if err == nil && commitObj.Content != nil {
+		objects[commitHash] = commitObj.Content
+	}
+
+	// Push refs
+	refs := []remote.RefInfo{{Name: headRef, Hash: commitHash}}
+	err = client.Push(context.Background(), refs, objects)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Push error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Pushed to %s\n", remoteURL)
+}
+
+func handlePull(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: pebble pull <remote-url> [token]")
+		os.Exit(1)
+	}
+
+	remoteURL := args[0]
+	token := ""
+	if len(args) > 1 {
+		token = args[1]
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	repo, err := snapshot.NewRepository(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create client
+	auth := remote.Auth{Token: token}
+	client := remote.NewClient(remoteURL, auth)
+
+	// Pull refs
+	wantRefs := []string{"heads/main"}
+	remoteRefs, objects, err := client.Pull(context.Background(), wantRefs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Pull error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Store objects
+	for hash, data := range objects {
+		obj := &snapshot.Object{
+			Type:    snapshot.ObjectTypeBlob,
+			Size:    int64(len(data)),
+			Hash:    hash,
+			Content: data,
+		}
+		repo.StoreObject(obj)
+	}
+
+	// Update refs
+	for refName, hash := range remoteRefs {
+		repo.SetRef(refName, hash)
+	}
+
+	fmt.Printf("Pulled from %s\n", remoteURL)
+	fmt.Printf("Updated refs: %d\n", len(remoteRefs))
 }
