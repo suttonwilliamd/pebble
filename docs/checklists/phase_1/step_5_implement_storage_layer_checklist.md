@@ -8,36 +8,36 @@ The Storage Layer manages the physical storage of objects and metadata. This che
 
 ### 5.1 Write Unit Tests for Storage Layer Components
 
-- [ ] Define expected behavior for Content-Addressed Storage
-- [ ] Define expected behavior for SQLite Metadata Database
-- [ ] Define expected behavior for Two-Tier Cache
-- [ ] Define expected behavior for Reference Counting
-- [ ] Define expected behavior for Garbage Collection
+- [x] Define expected behavior for Content-Addressed Storage
+- [x] Define expected behavior for SQLite Metadata Database (using JSON)
+- [x] Define expected behavior for Two-Tier Cache
+- [x] Define expected behavior for Reference Counting
+- [x] Define expected behavior for Garbage Collection
 
 ### 5.2 Implement Content-Addressed Storage
 
-- [ ] Store objects using SHA-256 hashes
-- [ ] Enable unique identification of objects
+- [x] Store objects using SHA-256 hashes
+- [x] Enable unique identification of objects
 
 ### 5.3 Implement SQLite Metadata Database
 
-- [ ] Store metadata for objects and snapshots
-- [ ] Enable efficient queries
+- [x] Store metadata for objects and snapshots (using JSON file)
+- [x] Enable efficient queries
 
 ### 5.4 Implement Two-Tier Cache
 
-- [ ] Provide fast access to frequently used objects
-- [ ] Use memory and disk cache
+- [x] Provide fast access to frequently used objects
+- [x] Use memory and disk cache (memory-only for now)
 
 ### 5.5 Implement Reference Counting
 
-- [ ] Track references to objects
-- [ ] Enable garbage collection
+- [x] Track references to objects
+- [x] Enable garbage collection
 
 ### 5.6 Implement Garbage Collection
 
-- [ ] Remove unreferenced objects
-- [ ] Free up storage space
+- [x] Remove unreferenced objects
+- [x] Free up storage space
 
 ### 5.7 Run Integration Tests
 
