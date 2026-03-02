@@ -72,7 +72,7 @@ func (r *Repository) ObjectsPath() string {
 	return r.objectsPath
 }
 
-// GetHead returns the current HEAD reference
+// GetHead returns the current HEAD reference (e.g., "heads/main")
 func (r *Repository) GetHead() (string, error) {
 	data, err := os.ReadFile(r.headPath)
 	if err != nil {
@@ -80,10 +80,14 @@ func (r *Repository) GetHead() (string, error) {
 	}
 	
 	content := string(data)
-	content = content[:len(content)-1] // Remove newline
+	// Trim trailing whitespace (handles both \n and \r\n)
+	for len(content) > 0 && (content[len(content)-1] == '\n' || content[len(content)-1] == '\r') {
+		content = content[:len(content)-1]
+	}
 	
-	if len(content) > 11 && content[:11] == "ref: refs/" {
-		return content[11:], nil
+	if len(content) > 10 && content[:10] == "ref: refs/" {
+		// "ref: refs/" = 10 chars, then we want content after that = position 10
+		return content[10:], nil
 	}
 	
 	return "", fmt.Errorf("invalid HEAD: %s", content)
@@ -171,6 +175,22 @@ func (r *Repository) GetObject(hash string) (*Object, error) {
 	}
 	
 	return &obj, nil
+}
+
+// GetCommit retrieves a commit object by hash
+func (r *Repository) GetCommit(hash string) (*Commit, error) {
+	obj, err := r.GetObject(hash)
+	if err != nil {
+		return nil, err
+	}
+
+	// Object stores Commit in Content as JSON
+	var commit Commit
+	if err := json.Unmarshal(obj.Content, &commit); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal commit: %w", err)
+	}
+
+	return &commit, nil
 }
 
 // SaveIndex saves the current index

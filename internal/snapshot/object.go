@@ -26,7 +26,7 @@ type Object struct {
 	Type    ObjectType `json:"type"`
 	Size    int64     `json:"size"`
 	Hash    string    `json:"hash"`
-	Content []byte    `json:"-"`
+	Content []byte    `json:"content"`
 }
 
 // TreeEntry represents an entry in a tree object

@@ -152,7 +152,11 @@ func handleCommit(args []string) {
 	repo.StoreObject(tree)
 
 	// Get parent commit
-	headRef, _ := repo.GetHead()
+	headRef, err := repo.GetHead()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting HEAD: %v\n", err)
+		os.Exit(1)
+	}
 	parentHash, _ := repo.GetRef(headRef)
 
 	// Create commit
@@ -160,7 +164,11 @@ func handleCommit(args []string) {
 	repo.StoreObject(commit)
 
 	// Update ref
-	repo.SetRef(headRef, commit.Hash)
+	err = repo.SetRef(headRef, commit.Hash)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error setting ref: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Save index
 	repo.SaveIndex(index)
@@ -189,15 +197,18 @@ func handleLog(args []string) {
 		return
 	}
 
-	// Simple log - just show last commit
-	commit, err := repo.GetObject(commitHash)
+	// Get commit properly
+	commit, err := repo.GetCommit(commitHash)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading commit: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("commit %s\n", commitHash)
-	fmt.Println(commit.Hash) // This would need proper parsing
+	fmt.Printf("Author: %s <%s>\n", commit.Author, commit.Email)
+	fmt.Printf("Date:   %s\n", commit.Timestamp.Format("Mon Jan 2 15:04:05 2006 -0700"))
+	fmt.Println()
+	fmt.Printf("    %s\n", commit.Message)
 }
 
 func handleStatus(args []string) {
