@@ -8,32 +8,32 @@ The Combine Operation handles merging snapshots and resolving conflicts. This ch
 
 ### 4.1 Write Unit Tests for Combine Operation Components
 
-- [ ] Define expected behavior for Snapshot Comparator
-- [ ] Define expected behavior for Tree Walker
-- [ ] Define expected behavior for File Comparator
-- [ ] Define expected behavior for File Generator
+- [x] Define expected behavior for Snapshot Comparator
+- [x] Define expected behavior for Tree Walker
+- [x] Define expected behavior for File Comparator
+- [x] Define expected behavior for File Generator
 - [ ] Define expected behavior for User Interface
-- [ ] Define expected behavior for Resolution Tracker
+- [x] Define expected behavior for Resolution Tracker
 
 ### 4.2 Implement Snapshot Comparator
 
-- [ ] Compare snapshots to identify differences
-- [ ] Detect added, modified, and deleted files
+- [x] Compare snapshots to identify differences
+- [x] Detect added, modified, and deleted files
 
 ### 4.3 Implement Tree Walker
 
-- [ ] Traverse the directory tree
-- [ ] Identify conflicts
+- [x] Traverse the directory tree
+- [x] Identify conflicts
 
 ### 4.4 Implement File Comparator
 
-- [ ] Compare individual files
-- [ ] Confirm conflicts
+- [x] Compare individual files
+- [x] Confirm conflicts
 
 ### 4.5 Implement File Generator
 
-- [ ] Generate conflict files with `.theirs` suffixes
-- [ ] Generate conflict files with `.ours` suffixes
+- [x] Generate conflict files with `.conflict` suffix
+- [ ] Generate conflict files with `.ours`/`.theirs` suffixes (optional)
 
 ### 4.6 Implement User Interface
 
@@ -42,7 +42,7 @@ The Combine Operation handles merging snapshots and resolving conflicts. This ch
 
 ### 4.7 Implement Resolution Tracker
 
-- [ ] Track the resolution status of conflicts
+- [x] Track the resolution status of conflicts
 - [ ] Log resolution actions
 
 ### 4.8 Run Integration Tests
@@ -53,15 +53,15 @@ The Combine Operation handles merging snapshots and resolving conflicts. This ch
 
 ### Conflict Detection
 
-- [ ] Identify differences between snapshots
-- [ ] Traverse the directory tree
-- [ ] Compare individual files
+- [x] Identify differences between snapshots
+- [x] Traverse the directory tree
+- [x] Compare individual files
 
 ### Conflict Resolution
 
-- [ ] Generate conflict files
+- [x] Generate conflict files
 - [ ] Provide a user interface
-- [ ] Track resolution status
+- [x] Track resolution status
 
 ### Performance Considerations
 
