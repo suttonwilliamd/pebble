@@ -279,3 +279,88 @@ func (fc *FileComparator) DiffLines(ourContent, theirContent []byte) (ourLines, 
 	sort.Strings(theirLines)
 	return
 }
+
+// ResolutionStatus represents the status of a conflict resolution
+type ResolutionStatus string
+
+const (
+	StatusPending   ResolutionStatus = "pending"
+	StatusResolved  ResolutionStatus = "resolved"
+	StatusRejected  ResolutionStatus = "rejected"
+)
+
+// ResolutionTracker tracks the resolution status of conflicts
+type ResolutionTracker struct {
+	resolutions map[string]Resolution
+	statuses    map[string]ResolutionStatus
+}
+
+// NewResolutionTracker creates a new resolution tracker
+func NewResolutionTracker() *ResolutionTracker {
+	return &ResolutionTracker{
+		resolutions: make(map[string]Resolution),
+		statuses:    make(map[string]ResolutionStatus),
+	}
+}
+
+// TrackResolution records a resolution
+func (rt *ResolutionTracker) TrackResolution(conflictPath string, res Resolution) {
+	rt.resolutions[conflictPath] = res
+	rt.statuses[conflictPath] = StatusResolved
+}
+
+// GetResolution gets a recorded resolution
+func (rt *ResolutionTracker) GetResolution(conflictPath string) (Resolution, bool) {
+	res, ok := rt.resolutions[conflictPath]
+	return res, ok
+}
+
+// GetStatus gets the status of a conflict
+func (rt *ResolutionTracker) GetStatus(conflictPath string) (ResolutionStatus, bool) {
+	status, ok := rt.statuses[conflictPath]
+	return status, ok
+}
+
+// IsResolved checks if a conflict is resolved
+func (rt *ResolutionTracker) IsResolved(conflictPath string) bool {
+	status, ok := rt.statuses[conflictPath]
+	return ok && status == StatusResolved
+}
+
+// GetPending returns all pending conflicts
+func (rt *ResolutionTracker) GetPending() []string {
+	var pending []string
+	for path, status := range rt.statuses {
+		if status == StatusPending {
+			pending = append(pending, path)
+		}
+	}
+	return pending
+}
+
+// GetResolved returns all resolved conflicts
+func (rt *ResolutionTracker) GetResolved() []string {
+	var resolved []string
+	for path, status := range rt.statuses {
+		if status == StatusResolved {
+			resolved = append(resolved, path)
+		}
+	}
+	return resolved
+}
+
+// Count returns the count of tracked conflicts
+func (rt *ResolutionTracker) Count() int {
+	return len(rt.resolutions)
+}
+
+// CountResolved returns the count of resolved conflicts
+func (rt *ResolutionTracker) CountResolved() int {
+	count := 0
+	for _, status := range rt.statuses {
+		if status == StatusResolved {
+			count++
+		}
+	}
+	return count
+}
