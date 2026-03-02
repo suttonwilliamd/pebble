@@ -116,6 +116,37 @@ func (r *Repository) GetRef(ref string) (string, error) {
 	return hash, nil
 }
 
+// GetRefs returns all references
+func (r *Repository) GetRefs() ([]Ref, error) {
+	refsPath := filepath.Join(r.refsPath, "heads")
+	
+	var refs []Ref
+	
+	entries, err := os.ReadDir(refsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return refs, nil
+		}
+		return nil, err
+	}
+	
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		
+		name := entry.Name()
+		hash, _ := r.GetRef("heads/" + name)
+		
+		refs = append(refs, Ref{
+			Name: "heads/" + name,
+			Hash: hash,
+		})
+	}
+	
+	return refs, nil
+}
+
 // SetRef sets a reference to a commit hash
 func (r *Repository) SetRef(ref, hash string) error {
 	refPath := filepath.Join(r.refsPath, ref)

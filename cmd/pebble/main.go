@@ -32,6 +32,10 @@ func main() {
 		handlePush(args)
 	case "pull":
 		handlePull(args)
+	case "branch":
+		handleBranch(args)
+	case "checkout":
+		handleCheckout(args)
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -49,6 +53,10 @@ func printUsage() {
 	fmt.Println("  pebble commit <message>  Create a new commit")
 	fmt.Println("  pebble log               Show commit history")
 	fmt.Println("  pebble status            Show working tree status")
+	fmt.Println("  pebble push <url> [token]   Push to remote")
+	fmt.Println("  pebble pull <url> [token]   Pull from remote")
+	fmt.Println("  pebble branch [name]     List or create branches")
+	fmt.Println("  pebble checkout <branch>  Switch branches")
 	fmt.Println("  pebble help              Show this help message")
 }
 
@@ -353,4 +361,99 @@ func handlePull(args []string) {
 
 	fmt.Printf("Pulled from %s\n", remoteURL)
 	fmt.Printf("Updated refs: %d\n", len(remoteRefs))
+}
+
+func handleBranch(args []string) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	repo, err := snapshot.NewRepository(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// List branches
+	if len(args) == 0 {
+		refs, err := repo.GetRefs()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting refs: %v\n", err)
+			os.Exit(1)
+		}
+
+		headRef, _ := repo.GetHead()
+	for _, ref := range refs {
+		prefix := "  "
+		// headRef is like "heads/main", ref.Name is like "heads/main"
+		if ref.Name == headRef {
+			prefix = "* "
+		}
+		// Strip "heads/" prefix for display
+		displayName := ref.Name
+		if len(displayName) > 6 && displayName[:6] == "heads/" {
+			displayName = displayName[6:]
+		}
+		fmt.Printf("%s%s\n", prefix, displayName)
+	}
+		return
+	}
+
+	// Create branch
+	branchName := args[0]
+	headRef, _ := repo.GetHead()
+	parentHash, _ := repo.GetRef(headRef)
+
+	// Store with "heads/" prefix
+	err = repo.SetRef("heads/"+branchName, parentHash)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating branch: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Created branch: %s\n", branchName)
+}
+
+func handleCheckout(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: pebble checkout <branch>")
+		os.Exit(1)
+	}
+
+	branchName := args[0]
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	repo, err := snapshot.NewRepository(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Check if branch exists (add "heads/" prefix if needed)
+	refName := branchName
+	if len(refName) < 6 || refName[:6] != "heads/" {
+		refName = "heads/" + branchName
+	}
+	
+	hash, err := repo.GetRef(refName)
+	if err != nil || hash == "" {
+		fmt.Fprintf(os.Stderr, "Branch not found: %s\n", branchName)
+		os.Exit(1)
+	}
+
+	// Update HEAD
+	err = repo.SetHead(refName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error switching branch: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Switched to branch: %s\n", branchName)
 }

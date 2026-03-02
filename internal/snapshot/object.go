@@ -71,6 +71,12 @@ type Commit struct {
 	Hash      string            `json:"hash"`
 }
 
+// Ref represents a branch or tag reference
+type Ref struct {
+	Name string `json:"name"`
+	Hash string `json:"hash"`
+}
+
 // NewObject creates a new object with computed hash
 func NewObject(objType ObjectType, content []byte) *Object {
 	hash := sha256.Sum256(content)
