@@ -1,8 +1,41 @@
-# Pebble + ROCK
+# Pebble
 
-Pebble + ROCK is a modern version control system with first-class binary asset handling. It is designed with a focus on correctness, immutability, clarity, and continuous progress.
+Pebble is a binary-first Git replacement (the next Git). Designed for correctness, immutability, and superior binary asset handling at scale.
 
-## Features
+## Why Pebble
+
+| Problem | Pebble Solution |
+|---------|-----------------|
+| Git stores full snapshots, bloat on large binaries | Content-defined chunking (ROCK) with deduplication |
+| Binaries treated as opaque blobs | First-class binary diffing and storage |
+| Large repos slow to clone/push | HTTP/2 + content-addressed transfer + resumable uploads |
+| Inline conflict markers (`<<<<<<`) | Materialized conflict files, explicit resolution |
+| No built-in access control | Basic RBAC for team collaboration |
+
+**Bottom line**: If you ship binaries, media, or datasets—Pebble is purpose-built for you.
+
+## Roadmap to Next Git
+
+See [docs/next-git-roadmap.md](docs/next-git-roadmap.md) for phased deliverables and metrics.
+
+### Phase 1: Core VCS (In Progress)
+- [x] Snapshot system (immutable commits)
+- [x] ROCK binary chunking
+- [ ] Combine/conflict engine
+- [ ] Content-addressed storage (CAS)
+- [ ] Remote sync protocol
+
+### Phase 2: Collaboration
+- Delta snapshots
+- Git interoperability (import/export)
+- Enhanced conflict resolution
+- Performance benchmarking
+
+### Phase 3: Enterprise
+- RBAC / access control
+- Tiered storage
+- IDE integrations
+- Self-hosted server
 
 ### Core Features
 

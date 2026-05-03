@@ -1,6 +1,6 @@
 module github.com/suttonwilliamd/pebble
 
-go 1.25.6
+go 1.21
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
