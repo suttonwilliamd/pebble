@@ -91,9 +91,21 @@ See [docs/next-git-roadmap.md](docs/next-git-roadmap.md) for phased deliverables
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.21.x (minimum supported toolchain)
 - Git
-- SQLite
+- SQLite (runtime only; driver is bundled via pure-Go modernc.org/sqlite)
+
+### Platform caveats
+
+- Go 1.19/1.20 are not supported.
+- CI validates on Go 1.21.x (`.github/workflows/ci.yml`).
+- If you hit toolchain issues, run:
+
+```bash
+go version
+go mod tidy
+go test ./...
+```
 
 ### Installation
 
