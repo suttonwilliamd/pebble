@@ -5,27 +5,40 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Repository represents a Pebble repository
 type Repository struct {
-	rootPath string
+	rootPath    string
 	objectsPath string
-	refsPath string
-	indexPath string
-	headPath string
+	refsPath    string
+	indexPath   string
+	headPath    string
+}
+
+// OpenRepository opens an existing repository without creating or repairing files.
+func OpenRepository(rootPath string) (*Repository, error) {
+	info, err := os.Stat(filepath.Join(rootPath, ".pebble"))
+	if err != nil {
+		return nil, fmt.Errorf("not a Pebble repository (run pebble init): %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf(".pebble is not a directory")
+	}
+	return &Repository{rootPath: rootPath, objectsPath: filepath.Join(rootPath, ".pebble", "objects"), refsPath: filepath.Join(rootPath, ".pebble", "refs"), indexPath: filepath.Join(rootPath, ".pebble", "index"), headPath: filepath.Join(rootPath, ".pebble", "HEAD")}, nil
 }
 
 // NewRepository creates or opens a repository
 func NewRepository(rootPath string) (*Repository, error) {
 	repo := &Repository{
-		rootPath: rootPath,
+		rootPath:    rootPath,
 		objectsPath: filepath.Join(rootPath, ".pebble", "objects"),
-		refsPath: filepath.Join(rootPath, ".pebble", "refs"),
-		indexPath: filepath.Join(rootPath, ".pebble", "index"),
-		headPath: filepath.Join(rootPath, ".pebble", "HEAD"),
+		refsPath:    filepath.Join(rootPath, ".pebble", "refs"),
+		indexPath:   filepath.Join(rootPath, ".pebble", "index"),
+		headPath:    filepath.Join(rootPath, ".pebble", "HEAD"),
 	}
-	
+
 	// Create directories if they don't exist
 	if err := os.MkdirAll(repo.objectsPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create objects directory: %w", err)
@@ -33,7 +46,7 @@ func NewRepository(rootPath string) (*Repository, error) {
 	if err := os.MkdirAll(repo.refsPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create refs directory: %w", err)
 	}
-	
+
 	return repo, nil
 }
 
@@ -43,22 +56,22 @@ func Init(rootPath string) (*Repository, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Write initial HEAD
 	if err := os.WriteFile(repo.headPath, []byte("ref: refs/heads/main\n"), 0644); err != nil {
 		return nil, fmt.Errorf("failed to write HEAD: %w", err)
 	}
-	
+
 	// Create initial branch
 	if err := os.MkdirAll(filepath.Join(repo.refsPath, "heads"), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create refs/heads: %w", err)
 	}
-	
+
 	// Initialize main branch as empty
 	if err := os.WriteFile(filepath.Join(repo.refsPath, "heads", "main"), []byte("\n"), 0644); err != nil {
 		return nil, fmt.Errorf("failed to create main branch: %w", err)
 	}
-	
+
 	return repo, nil
 }
 
@@ -78,18 +91,18 @@ func (r *Repository) GetHead() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read HEAD: %w", err)
 	}
-	
+
 	content := string(data)
 	// Trim trailing whitespace (handles both \n and \r\n)
 	for len(content) > 0 && (content[len(content)-1] == '\n' || content[len(content)-1] == '\r') {
 		content = content[:len(content)-1]
 	}
-	
+
 	if len(content) > 10 && content[:10] == "ref: refs/" {
 		// "ref: refs/" = 10 chars, then we want content after that = position 10
 		return content[10:], nil
 	}
-	
+
 	return "", fmt.Errorf("invalid HEAD: %s", content)
 }
 
@@ -109,19 +122,19 @@ func (r *Repository) GetRef(ref string) (string, error) {
 		}
 		return "", fmt.Errorf("failed to read ref %s: %w", ref, err)
 	}
-	
+
 	hash := string(data)
-	hash = hash[:len(hash)-1] // Remove newline
-	
+	hash = strings.TrimSpace(hash) // Accept empty refs and LF/CRLF without slicing panics.
+
 	return hash, nil
 }
 
 // GetRefs returns all references
 func (r *Repository) GetRefs() ([]Ref, error) {
 	refsPath := filepath.Join(r.refsPath, "heads")
-	
+
 	var refs []Ref
-	
+
 	entries, err := os.ReadDir(refsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -129,33 +142,33 @@ func (r *Repository) GetRefs() ([]Ref, error) {
 		}
 		return nil, err
 	}
-	
+
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		
+
 		name := entry.Name()
 		hash, _ := r.GetRef("heads/" + name)
-		
+
 		refs = append(refs, Ref{
 			Name: "heads/" + name,
 			Hash: hash,
 		})
 	}
-	
+
 	return refs, nil
 }
 
 // SetRef sets a reference to a commit hash
 func (r *Repository) SetRef(ref, hash string) error {
 	refPath := filepath.Join(r.refsPath, ref)
-	
+
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(refPath), 0755); err != nil {
 		return fmt.Errorf("failed to create ref directory: %w", err)
 	}
-	
+
 	return os.WriteFile(refPath, []byte(hash+"\n"), 0644)
 }
 
@@ -165,24 +178,24 @@ func (r *Repository) StoreObject(obj *Object) error {
 	hash := obj.Hash
 	subDir := hash[:2]
 	objDir := filepath.Join(r.objectsPath, subDir)
-	
+
 	if err := os.MkdirAll(objDir, 0755); err != nil {
 		return fmt.Errorf("failed to create object directory: %w", err)
 	}
-	
+
 	objPath := filepath.Join(objDir, hash[2:])
-	
+
 	// Check if already exists
 	if _, err := os.Stat(objPath); err == nil {
 		return nil // Already exists
 	}
-	
+
 	// Store object metadata (not raw content)
 	data, err := json.Marshal(obj)
 	if err != nil {
 		return fmt.Errorf("failed to marshal object: %w", err)
 	}
-	
+
 	return os.WriteFile(objPath, data, 0644)
 }
 
@@ -191,20 +204,20 @@ func (r *Repository) GetObject(hash string) (*Object, error) {
 	if len(hash) < 2 {
 		return nil, fmt.Errorf("invalid hash: %s", hash)
 	}
-	
+
 	subDir := hash[:2]
 	objPath := filepath.Join(r.objectsPath, subDir, hash[2:])
-	
+
 	data, err := os.ReadFile(objPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read object: %w", err)
 	}
-	
+
 	var obj Object
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal object: %w", err)
 	}
-	
+
 	return &obj, nil
 }
 
@@ -230,7 +243,7 @@ func (r *Repository) SaveIndex(index *Index) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal index: %w", err)
 	}
-	
+
 	return os.WriteFile(r.indexPath, data, 0644)
 }
 
@@ -240,12 +253,12 @@ func (r *Repository) LoadIndex() (*Index, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read index: %w", err)
 	}
-	
+
 	var index Index
 	if err := json.Unmarshal(data, &index); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal index: %w", err)
 	}
-	
+
 	return &index, nil
 }
 

@@ -18,3 +18,9 @@ jobs:
         run: go build ./...
       - name: Test
         run: go test ./...
+      - name: Vet snapshot and CLI packages
+        run: go vet ./internal/snapshot ./cmd/pebble
+      - name: Race-check snapshot and CLI packages
+        env:
+          CGO_ENABLED: '1'
+        run: go test -race ./internal/snapshot ./cmd/pebble

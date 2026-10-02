@@ -109,28 +109,15 @@ func handleCommit(args []string) {
 		os.Exit(1)
 	}
 
-	repo, err := snapshot.NewRepository(cwd)
+	repo, err := snapshot.OpenRepository(cwd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Load ignore patterns
-	ignorePatterns := []string{".pebble", ".git"}
-	if data, err := os.ReadFile(filepath.Join(cwd, ".pebbleignore")); err == nil {
-		// Simple parsing - just split by newlines
-		lines := string(data)
-		for _, line := range []byte(lines) {
-			if line == '\n' || line == '#' {
-				continue
-			}
-			// Add more sophisticated parsing if needed
-		}
-	}
-
-	// Generate index
-	generator := snapshot.NewFileIndexGenerator(cwd, ignorePatterns)
-	index, err := generator.GenerateIndex()
+	// Generate the same working index used by status, including ignore rules
+	// and previously tracked files.
+	index, err := snapshot.WorkingIndex(repo)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating index: %v\n", err)
 		os.Exit(1)
@@ -144,9 +131,16 @@ func handleCommit(args []string) {
 		obj, err := snapshot.CreateBlob(filepath.Join(cwd, entry.Path))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating blob for %s: %v\n", entry.Path, err)
-			continue
+			os.Exit(1)
 		}
-		repo.StoreObject(obj)
+		if obj.Hash != entry.Hash {
+			fmt.Fprintf(os.Stderr, "File changed during commit: %s; retry the commit\n", entry.Path)
+			os.Exit(1)
+		}
+		if err := repo.StoreObject(obj); err != nil {
+			fmt.Fprintf(os.Stderr, "Error storing blob: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Create tree from index
@@ -163,7 +157,10 @@ func handleCommit(args []string) {
 		})
 	}
 	tree := snapshot.CreateTree(entries)
-	repo.StoreObject(tree)
+	if err := repo.StoreObject(tree); err != nil {
+		fmt.Fprintf(os.Stderr, "Error storing tree: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Get parent commit
 	headRef, err := repo.GetHead()
@@ -175,7 +172,10 @@ func handleCommit(args []string) {
 
 	// Create commit
 	commit := snapshot.CreateCommit(tree.Hash, parentHash, "User", "user@example.com", message)
-	repo.StoreObject(commit)
+	if err := repo.StoreObject(commit); err != nil {
+		fmt.Fprintf(os.Stderr, "Error storing commit: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Update ref
 	err = repo.SetRef(headRef, commit.Hash)
@@ -185,7 +185,10 @@ func handleCommit(args []string) {
 	}
 
 	// Save index
-	repo.SaveIndex(index)
+	if err := repo.SaveIndex(index); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving index: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("[%s] %s\n", commit.Hash[:8], message)
 }
@@ -226,28 +229,43 @@ func handleLog(args []string) {
 }
 
 func handleStatus(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "Usage: pebble status")
+		os.Exit(1)
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	repo, err := snapshot.NewRepository(cwd)
+	repo, err := snapshot.OpenRepository(cwd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Try to load index
-	index, err := repo.LoadIndex()
+	status, err := snapshot.WorkingTreeStatus(repo)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading status: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("On branch %s\n", status.Branch)
+	if status.Unborn {
 		fmt.Println("No commits yet")
+	}
+	if len(status.Changes) == 0 {
+		if !status.Unborn {
+			fmt.Println("Working tree clean")
+		} else {
+			fmt.Println("No files to commit")
+		}
 		return
 	}
-
-	fmt.Printf("On branch main\n")
-	fmt.Printf("Index hash: %s\n", index.Hash)
-	fmt.Printf("Files tracked: %d\n", len(index.Entries))
+	fmt.Println("Changes since HEAD:")
+	for _, change := range status.Changes {
+		fmt.Printf("  %s: %q\n", change.Kind, change.Path)
+	}
 }
 
 func handlePush(args []string) {
@@ -289,7 +307,7 @@ func handlePush(args []string) {
 
 	// Collect objects to push
 	objects := make(map[string][]byte)
-	
+
 	// Get commit object
 	commitObj, err := repo.GetObject(commitHash)
 	if err == nil && commitObj.Content != nil {
@@ -385,19 +403,19 @@ func handleBranch(args []string) {
 		}
 
 		headRef, _ := repo.GetHead()
-	for _, ref := range refs {
-		prefix := "  "
-		// headRef is like "heads/main", ref.Name is like "heads/main"
-		if ref.Name == headRef {
-			prefix = "* "
+		for _, ref := range refs {
+			prefix := "  "
+			// headRef is like "heads/main", ref.Name is like "heads/main"
+			if ref.Name == headRef {
+				prefix = "* "
+			}
+			// Strip "heads/" prefix for display
+			displayName := ref.Name
+			if len(displayName) > 6 && displayName[:6] == "heads/" {
+				displayName = displayName[6:]
+			}
+			fmt.Printf("%s%s\n", prefix, displayName)
 		}
-		// Strip "heads/" prefix for display
-		displayName := ref.Name
-		if len(displayName) > 6 && displayName[:6] == "heads/" {
-			displayName = displayName[6:]
-		}
-		fmt.Printf("%s%s\n", prefix, displayName)
-	}
 		return
 	}
 
@@ -441,7 +459,7 @@ func handleCheckout(args []string) {
 	if len(refName) < 6 || refName[:6] != "heads/" {
 		refName = "heads/" + branchName
 	}
-	
+
 	hash, err := repo.GetRef(refName)
 	if err != nil || hash == "" {
 		fmt.Fprintf(os.Stderr, "Branch not found: %s\n", branchName)
