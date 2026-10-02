@@ -142,13 +142,69 @@ pebble init
 pebble commit "Initial commit"
 ```
 
-3. View the commit history:
+3. Inspect actual working-tree changes:
+
+```bash
+pebble status
+```
+
+Status reports the current branch and **added**, **modified**, and **deleted**
+regular files relative to that branch's HEAD snapshot. Binary changes are detected
+by content hash, not just file size or modification time. Paths are quoted so
+spaces and control characters are unambiguous. A committed, unchanged repository
+reports `Working tree clean`; an unborn branch reports `No commits yet` and its
+files to commit. Status is read-only and fails on invalid/missing HEAD or tree
+objects instead of reporting a misleading clean state. Run it at the repository
+root; it does not implicitly initialize a repository or discover parent repos.
+
+#### Ignore rules shared by status and commit
+
+Place rules in the root `.pebbleignore` (not `.gitignore`). Both commands use the
+same rules. `.pebble` and `.git` metadata are always excluded, even without an
+ignore file. Already tracked files remain tracked when a new ignore rule matches
+them; their modifications and deletions are still reported and committed.
+
+```text
+# Comments and blank lines are allowed.
+*.log
+build/
+.env
+/root-only.txt
+assets/*.tmp
+```
+
+- Patterns are case-sensitive and use `/` separators on every platform.
+- A basename pattern matches at any depth; `build/` excludes directories named
+  `build` and their contents, but not a regular file named `build`.
+- A leading `/` anchors a pattern at the repository root. Patterns containing
+  `/`, such as `assets/*.tmp`, are also root-relative.
+- `*`, `?`, and bracket classes are supported. `*` does not cross `/` boundaries.
+- Blank lines and lines beginning with `#` are ignored; surrounding whitespace is
+  trimmed. CRLF files work. Nested ignore files are not read.
+- Negation (`!`) and recursive `**` patterns are **not supported**; unsupported or
+  malformed patterns cause both commands to fail rather than silently ignore
+  the rule. Inline comments are not supported.
+- Symlinks and special files are not snapshotted. Replacing a tracked regular
+  file with a symlink reports the tracked file as deleted without following the
+  link. Executable-bit changes are detected where the filesystem supports them;
+  other permission and mtime-only changes are not treated as content changes.
+- Newly committed paths use `/` separators. Historical Windows tree paths are
+  recognized. Literal backslashes and colons in POSIX filenames are rejected
+  instead of creating snapshots that cannot be read back portably.
+
+**Current checkout limitation:** `pebble checkout` changes HEAD but does not yet
+restore working files. Status deliberately compares with the selected branch's
+HEAD, so it correctly shows those remaining differences rather than using the
+previous branch's saved index. This change does not implement checkout restoration
+or connect the CLI snapshot format to ROCK chunk storage.
+
+4. View the commit history:
 
 ```bash
 pebble log
 ```
 
-4. Push changes to a remote repository:
+5. Push changes to a remote repository:
 
 ```bash
 pebble push origin main
