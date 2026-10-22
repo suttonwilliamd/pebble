@@ -1,0 +1,20 @@
+# Dogfood this source tree alongside Git. Metadata is always excluded.
+bin/
+pkg/
+build/
+dist/
+out/
+coverage/
+node_modules/
+vendor/
+tmp/
+*.exe
+*.test
+*.log
+*.db
+*.sqlite
+*.cover
+.env
+.env.*
+.DS_Store
+Thumbs.db

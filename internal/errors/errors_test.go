@@ -21,7 +21,7 @@ func TestNew(t *testing.T) {
 func TestWrap(t *testing.T) {
 	original := errors.New("original error")
 	err := Wrap(ErrCodeNetwork, "wrapped error", original)
-	
+
 	if err.Code != ErrCodeNetwork {
 		t.Errorf("Code = %v, want %v", err.Code, ErrCodeNetwork)
 	}
@@ -33,7 +33,7 @@ func TestWrap(t *testing.T) {
 func TestError(t *testing.T) {
 	err := New(ErrCodeObjectNotFound, "object not found")
 	msg := err.Error()
-	
+
 	if msg == "" {
 		t.Error("Error message should not be empty")
 	}
@@ -41,12 +41,23 @@ func TestError(t *testing.T) {
 
 func TestIs(t *testing.T) {
 	err := New(ErrCodeNotInitialized, "test")
-	
+
 	if !err.Is(ErrCodeNotInitialized) {
 		t.Error("Expected Is to return true for matching code")
 	}
 	if err.Is(ErrCodeObjectNotFound) {
 		t.Error("Expected Is to return false for non-matching code")
+	}
+}
+
+func TestStandardIs(t *testing.T) {
+	cause := NotInitialized("repo")
+	err := Wrap(ErrCodeNetwork, "outer", cause)
+	if !errors.Is(err, ErrCodeNotInitialized) || !errors.Is(err, ErrCodeNetwork) || !errors.Is(err, NotInitialized("other")) {
+		t.Fatal("standard errors.Is did not traverse/match codes")
+	}
+	if errors.Is(err, ErrCodeObjectNotFound) || errors.Is(err, errors.New("other")) {
+		t.Fatal("unrelated target matched")
 	}
 }
 
@@ -81,7 +92,7 @@ func TestRefNotFound(t *testing.T) {
 func TestNetworkError(t *testing.T) {
 	original := errors.New("connection refused")
 	err := NetworkError("failed to connect", original)
-	
+
 	if err.Code != ErrCodeNetwork {
 		t.Errorf("Code = %v, want NETWORK_ERROR", err.Code)
 	}
@@ -121,7 +132,7 @@ func TestNoCommits(t *testing.T) {
 func TestUnwrap(t *testing.T) {
 	original := errors.New("original")
 	err := Wrap(ErrCodeNetwork, "wrapped", original)
-	
+
 	unwrapped := err.Unwrap()
 	if unwrapped != original {
 		t.Error("Unwrap should return the cause")

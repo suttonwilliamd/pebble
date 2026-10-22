@@ -1,260 +1,283 @@
 package snapshot
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// Repository represents a Pebble repository
-type Repository struct {
-	rootPath string
-	objectsPath string
-	refsPath string
-	indexPath string
-	headPath string
+type Repository struct{ rootPath, objectsPath, refsPath, indexPath, headPath string }
+
+func repositoryAt(root string) *Repository {
+	return &Repository{root, filepath.Join(root, ".pebble", "objects"), filepath.Join(root, ".pebble", "refs"), filepath.Join(root, ".pebble", "index"), filepath.Join(root, ".pebble", "HEAD")}
 }
 
-// NewRepository creates or opens a repository
-func NewRepository(rootPath string) (*Repository, error) {
-	repo := &Repository{
-		rootPath: rootPath,
-		objectsPath: filepath.Join(rootPath, ".pebble", "objects"),
-		refsPath: filepath.Join(rootPath, ".pebble", "refs"),
-		indexPath: filepath.Join(rootPath, ".pebble", "index"),
-		headPath: filepath.Join(rootPath, ".pebble", "HEAD"),
-	}
-	
-	// Create directories if they don't exist
-	if err := os.MkdirAll(repo.objectsPath, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create objects directory: %w", err)
-	}
-	if err := os.MkdirAll(repo.refsPath, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create refs directory: %w", err)
-	}
-	
-	return repo, nil
-}
-
-// Init initializes a new repository
-func Init(rootPath string) (*Repository, error) {
-	repo, err := NewRepository(rootPath)
+// NewRepository opens an existing repository, searching ancestors without creating files.
+func NewRepository(path string) (*Repository, error) {
+	root, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	
-	// Write initial HEAD
-	if err := os.WriteFile(repo.headPath, []byte("ref: refs/heads/main\n"), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write HEAD: %w", err)
+	for {
+		if IsInitialized(root) {
+			return repositoryAt(root), nil
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			return nil, fmt.Errorf("not a Pebble repository (run pebble init)")
+		}
+		root = parent
 	}
-	
-	// Create initial branch
-	if err := os.MkdirAll(filepath.Join(repo.refsPath, "heads"), 0755); err != nil {
-		return nil, fmt.Errorf("failed to create refs/heads: %w", err)
-	}
-	
-	// Initialize main branch as empty
-	if err := os.WriteFile(filepath.Join(repo.refsPath, "heads", "main"), []byte("\n"), 0644); err != nil {
-		return nil, fmt.Errorf("failed to create main branch: %w", err)
-	}
-	
-	return repo, nil
 }
 
-// RootPath returns the repository root path
-func (r *Repository) RootPath() string {
-	return r.rootPath
+func Init(path string) (*Repository, error) {
+	root, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if err = os.MkdirAll(root, 0755); err != nil {
+		return nil, err
+	}
+	// Never reset an existing repository, including a partially initialized one.
+	if err = os.Mkdir(filepath.Join(root, ".pebble"), 0755); err != nil {
+		return nil, fmt.Errorf("cannot initialize repository: %w", err)
+	}
+	r := repositoryAt(root)
+	if err = os.MkdirAll(r.objectsPath, 0755); err != nil {
+		return nil, err
+	}
+	if err = r.SetRef("heads/main", ""); err != nil {
+		return nil, err
+	}
+	if err = r.SetHead("heads/main"); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+func (r *Repository) RootPath() string    { return r.rootPath }
+func (r *Repository) ObjectsPath() string { return r.objectsPath }
+
+// atomicWrite keeps readers from observing truncated metadata or objects.
+func atomicWrite(path string, data []byte, mode os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".pebble-tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Chmod(mode); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
-// ObjectsPath returns the objects directory path
-func (r *Repository) ObjectsPath() string {
-	return r.objectsPath
+// Lock serializes cooperating writers. A stale lock is deliberately not removed automatically.
+func (r *Repository) Lock() (func(), error) {
+	path := filepath.Join(r.rootPath, ".pebble", "write.lock")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("repository locked or not writable (inspect %s): %w", path, err)
+	}
+	if _, err = fmt.Fprintf(f, "pid %d\n", os.Getpid()); err != nil {
+		f.Close()
+		os.Remove(path)
+		return nil, err
+	}
+	if err = f.Close(); err != nil {
+		os.Remove(path)
+		return nil, err
+	}
+	return func() { os.Remove(path) }, nil
 }
-
-// GetHead returns the current HEAD reference (e.g., "heads/main")
+func validHash(hash string) bool {
+	b, err := hex.DecodeString(hash)
+	return err == nil && len(b) == 32 && hash == strings.ToLower(hash)
+}
+func validateRef(ref string) error {
+	if !strings.HasPrefix(ref, "heads/") {
+		return fmt.Errorf("invalid branch reference %q", ref)
+	}
+	for _, part := range strings.Split(ref, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return fmt.Errorf("invalid branch reference %q", ref)
+		}
+		for _, c := range part {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
+				return fmt.Errorf("invalid branch reference %q", ref)
+			}
+		}
+	}
+	return nil
+}
 func (r *Repository) GetHead() (string, error) {
 	data, err := os.ReadFile(r.headPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read HEAD: %w", err)
+		return "", err
 	}
-	
-	content := string(data)
-	// Trim trailing whitespace (handles both \n and \r\n)
-	for len(content) > 0 && (content[len(content)-1] == '\n' || content[len(content)-1] == '\r') {
-		content = content[:len(content)-1]
+	s := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(s, "ref: refs/") {
+		return "", fmt.Errorf("invalid HEAD")
 	}
-	
-	if len(content) > 10 && content[:10] == "ref: refs/" {
-		// "ref: refs/" = 10 chars, then we want content after that = position 10
-		return content[10:], nil
-	}
-	
-	return "", fmt.Errorf("invalid HEAD: %s", content)
+	ref := strings.TrimPrefix(s, "ref: refs/")
+	return ref, validateRef(ref)
 }
-
-// SetHead sets the HEAD to a reference
 func (r *Repository) SetHead(ref string) error {
-	data := []byte(fmt.Sprintf("ref: refs/%s\n", ref))
-	return os.WriteFile(r.headPath, data, 0644)
-}
-
-// GetRef returns the commit hash for a reference
-func (r *Repository) GetRef(ref string) (string, error) {
-	refPath := filepath.Join(r.refsPath, ref)
-	data, err := os.ReadFile(refPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("failed to read ref %s: %w", ref, err)
+	if err := validateRef(ref); err != nil {
+		return err
 	}
-	
-	hash := string(data)
-	hash = hash[:len(hash)-1] // Remove newline
-	
+	return atomicWrite(r.headPath, []byte("ref: refs/"+ref+"\n"), 0644)
+}
+func (r *Repository) GetRef(ref string) (string, error) {
+	if err := validateRef(ref); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(r.refsPath, filepath.FromSlash(ref)))
+	if err != nil {
+		return "", err
+	}
+	hash := strings.TrimSpace(string(data))
+	if hash != "" && !validHash(hash) {
+		return "", fmt.Errorf("invalid hash in ref %s", ref)
+	}
 	return hash, nil
 }
-
-// GetRefs returns all references
-func (r *Repository) GetRefs() ([]Ref, error) {
-	refsPath := filepath.Join(r.refsPath, "heads")
-	
-	var refs []Ref
-	
-	entries, err := os.ReadDir(refsPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return refs, nil
-		}
-		return nil, err
-	}
-	
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		
-		name := entry.Name()
-		hash, _ := r.GetRef("heads/" + name)
-		
-		refs = append(refs, Ref{
-			Name: "heads/" + name,
-			Hash: hash,
-		})
-	}
-	
-	return refs, nil
-}
-
-// SetRef sets a reference to a commit hash
 func (r *Repository) SetRef(ref, hash string) error {
-	refPath := filepath.Join(r.refsPath, ref)
-	
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(refPath), 0755); err != nil {
-		return fmt.Errorf("failed to create ref directory: %w", err)
+	if err := validateRef(ref); err != nil {
+		return err
 	}
-	
-	return os.WriteFile(refPath, []byte(hash+"\n"), 0644)
+	if hash != "" && !validHash(hash) {
+		return fmt.Errorf("invalid hash %q", hash)
+	}
+	path := filepath.Join(r.refsPath, filepath.FromSlash(ref))
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return atomicWrite(path, []byte(hash+"\n"), 0644)
 }
-
-// StoreObject stores an object in the repository
+func (r *Repository) GetRefs() ([]Ref, error) {
+	refs := []Ref{}
+	base := filepath.Join(r.refsPath, "heads")
+	err := filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(r.refsPath, path)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(rel)
+		hash, err := r.GetRef(name)
+		if err != nil {
+			return err
+		}
+		refs = append(refs, Ref{name, hash})
+		return nil
+	})
+	return refs, err
+}
+func validateObject(obj *Object) error {
+	if obj == nil {
+		return fmt.Errorf("nil object")
+	}
+	switch obj.Type {
+	case ObjectTypeBlob, ObjectTypeTree, ObjectTypeCommit, ObjectTypeIndex:
+	default:
+		return fmt.Errorf("invalid object type %q", obj.Type)
+	}
+	if !validHash(obj.Hash) || ComputeHash(obj.Content) != obj.Hash || obj.Size != int64(len(obj.Content)) {
+		return fmt.Errorf("object integrity check failed for %s", obj.Hash)
+	}
+	return nil
+}
 func (r *Repository) StoreObject(obj *Object) error {
-	// Store in subdirectory based on first 2 chars of hash
-	hash := obj.Hash
-	subDir := hash[:2]
-	objDir := filepath.Join(r.objectsPath, subDir)
-	
-	if err := os.MkdirAll(objDir, 0755); err != nil {
-		return fmt.Errorf("failed to create object directory: %w", err)
+	if err := validateObject(obj); err != nil {
+		return err
 	}
-	
-	objPath := filepath.Join(objDir, hash[2:])
-	
-	// Check if already exists
-	if _, err := os.Stat(objPath); err == nil {
-		return nil // Already exists
+	path := filepath.Join(r.objectsPath, obj.Hash[:2], obj.Hash[2:])
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
 	}
-	
-	// Store object metadata (not raw content)
+	if _, err := os.Stat(path); err == nil {
+		_, err = r.GetObject(obj.Hash)
+		return err
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	data, err := json.Marshal(obj)
 	if err != nil {
-		return fmt.Errorf("failed to marshal object: %w", err)
+		return err
 	}
-	
-	return os.WriteFile(objPath, data, 0644)
+	return atomicWrite(path, data, 0644)
 }
-
-// GetObject retrieves an object by hash
 func (r *Repository) GetObject(hash string) (*Object, error) {
-	if len(hash) < 2 {
-		return nil, fmt.Errorf("invalid hash: %s", hash)
+	if !validHash(hash) {
+		return nil, fmt.Errorf("invalid hash %q", hash)
 	}
-	
-	subDir := hash[:2]
-	objPath := filepath.Join(r.objectsPath, subDir, hash[2:])
-	
-	data, err := os.ReadFile(objPath)
+	data, err := os.ReadFile(filepath.Join(r.objectsPath, hash[:2], hash[2:]))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read object: %w", err)
+		return nil, err
 	}
-	
 	var obj Object
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal object: %w", err)
+	if err = json.Unmarshal(data, &obj); err != nil {
+		return nil, err
 	}
-	
+	if obj.Hash != hash {
+		return nil, fmt.Errorf("object address mismatch: %s", hash)
+	}
+	if err = validateObject(&obj); err != nil {
+		return nil, err
+	}
 	return &obj, nil
 }
-
-// GetCommit retrieves a commit object by hash
 func (r *Repository) GetCommit(hash string) (*Commit, error) {
 	obj, err := r.GetObject(hash)
 	if err != nil {
 		return nil, err
 	}
-
-	// Object stores Commit in Content as JSON
-	var commit Commit
-	if err := json.Unmarshal(obj.Content, &commit); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal commit: %w", err)
+	if obj.Type != ObjectTypeCommit {
+		return nil, fmt.Errorf("not a commit: %s", hash)
 	}
-
+	var commit Commit
+	if err = json.Unmarshal(obj.Content, &commit); err != nil {
+		return nil, err
+	}
+	commit.Hash = hash
 	return &commit, nil
 }
-
-// SaveIndex saves the current index
 func (r *Repository) SaveIndex(index *Index) error {
 	data, err := json.Marshal(index)
 	if err != nil {
-		return fmt.Errorf("failed to marshal index: %w", err)
+		return err
 	}
-	
-	return os.WriteFile(r.indexPath, data, 0644)
+	return atomicWrite(r.indexPath, data, 0644)
 }
-
-// LoadIndex loads the current index
 func (r *Repository) LoadIndex() (*Index, error) {
 	data, err := os.ReadFile(r.indexPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read index: %w", err)
+		return nil, err
 	}
-	
 	var index Index
-	if err := json.Unmarshal(data, &index); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal index: %w", err)
-	}
-	
-	return &index, nil
+	err = json.Unmarshal(data, &index)
+	return &index, err
 }
-
-// IsInitialized checks if the directory is a Pebble repository
-func IsInitialized(rootPath string) bool {
-	pebbleDir := filepath.Join(rootPath, ".pebble")
-	info, err := os.Stat(pebbleDir)
-	if err != nil {
-		return false
-	}
-	return info.IsDir()
+func IsInitialized(root string) bool {
+	info, err := os.Stat(filepath.Join(root, ".pebble", "HEAD"))
+	return err == nil && info.Mode().IsRegular()
 }

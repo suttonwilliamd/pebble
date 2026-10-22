@@ -8,43 +8,46 @@ import (
 // ErrorCode represents a category of errors
 type ErrorCode string
 
+// Error allows error codes to be used as errors.Is targets.
+func (c ErrorCode) Error() string { return string(c) }
+
 const (
 	// Repository errors
-	ErrCodeNotInitialized ErrorCode = "NOT_INITIALIZED"
+	ErrCodeNotInitialized     ErrorCode = "NOT_INITIALIZED"
 	ErrCodeAlreadyInitialized ErrorCode = "ALREADY_INITIALIZED"
-	ErrCodeInvalidPath ErrorCode = "INVALID_PATH"
-	
-	// Object errors  
-	ErrCodeObjectNotFound ErrorCode = "OBJECT_NOT_FOUND"
+	ErrCodeInvalidPath        ErrorCode = "INVALID_PATH"
+
+	// Object errors
+	ErrCodeObjectNotFound  ErrorCode = "OBJECT_NOT_FOUND"
 	ErrCodeObjectCorrupted ErrorCode = "OBJECT_CORRUPTED"
-	
+
 	// Commit errors
-	ErrCodeNoCommits ErrorCode = "NO_COMMITS"
+	ErrCodeNoCommits     ErrorCode = "NO_COMMITS"
 	ErrCodeInvalidCommit ErrorCode = "INVALID_COMMIT"
-	
+
 	// Ref errors
 	ErrCodeRefNotFound ErrorCode = "REF_NOT_FOUND"
 	ErrCodeRefConflict ErrorCode = "REF_CONFLICT"
-	
+
 	// Network errors
-	ErrCodeNetwork ErrorCode = "NETWORK_ERROR"
-	ErrCodeTimeout ErrorCode = "TIMEOUT"
+	ErrCodeNetwork    ErrorCode = "NETWORK_ERROR"
+	ErrCodeTimeout    ErrorCode = "TIMEOUT"
 	ErrCodeAuthFailed ErrorCode = "AUTH_FAILED"
-	
+
 	// Storage errors
-	ErrCodeStorageFull ErrorCode = "STORAGE_FULL"
+	ErrCodeStorageFull  ErrorCode = "STORAGE_FULL"
 	ErrCodeStorageError ErrorCode = "STORAGE_ERROR"
-	
+
 	// User input errors
 	ErrCodeInvalidInput ErrorCode = "INVALID_INPUT"
-	ErrCodeMissingArg ErrorCode = "MISSING_ARGUMENT"
+	ErrCodeMissingArg   ErrorCode = "MISSING_ARGUMENT"
 )
 
 // PebbleError represents an error with context
 type PebbleError struct {
-	Code    ErrorCode   `json:"code"`
-	Message string      `json:"message"`
-	Cause   error      `json:"cause,omitempty"`
+	Code      ErrorCode `json:"code"`
+	Message   string    `json:"message"`
+	Cause     error     `json:"cause,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
@@ -62,8 +65,8 @@ func (e *PebbleError) Unwrap() error {
 // New creates a new PebbleError
 func New(code ErrorCode, message string) *PebbleError {
 	return &PebbleError{
-		Code:     code,
-		Message:  message,
+		Code:      code,
+		Message:   message,
 		Timestamp: time.Now(),
 	}
 }
@@ -71,16 +74,23 @@ func New(code ErrorCode, message string) *PebbleError {
 // Wrap wraps an existing error
 func Wrap(code ErrorCode, message string, cause error) *PebbleError {
 	return &PebbleError{
-		Code:     code,
-		Message:  message,
-		Cause:    cause,
+		Code:      code,
+		Message:   message,
+		Cause:     cause,
 		Timestamp: time.Now(),
 	}
 }
 
-// Is checks if the error matches the code
-func (e *PebbleError) Is(code ErrorCode) bool {
-	return e.Code == code
+// Is supports standard errors.Is matching by code.
+func (e *PebbleError) Is(target error) bool {
+	switch target := target.(type) {
+	case ErrorCode:
+		return e.Code == target
+	case *PebbleError:
+		return target != nil && e.Code == target.Code
+	default:
+		return false
+	}
 }
 
 // Helper constructors

@@ -3,167 +3,136 @@ package snapshot
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
-// FileIndexGenerator generates file indices for snapshots
 type FileIndexGenerator struct {
-	rootPath string
+	rootPath       string
 	ignorePatterns []string
 }
 
-// NewFileIndexGenerator creates a new index generator
-func NewFileIndexGenerator(rootPath string, ignorePatterns []string) *FileIndexGenerator {
-	return &FileIndexGenerator{
-		rootPath: rootPath,
-		ignorePatterns: ignorePatterns,
-	}
+func NewFileIndexGenerator(root string, patterns []string) *FileIndexGenerator {
+	return &FileIndexGenerator{root, patterns}
 }
 
-// shouldIgnore checks if a path should be ignored
-func (f *FileIndexGenerator) shouldIgnore(path string) bool {
-	relPath, err := filepath.Rel(f.rootPath, path)
+// ReadIgnore supports comments, blank lines, globs, root-relative paths and directory rules.
+// Negation and ** are rejected instead of silently misinterpreted.
+func ReadIgnore(root string) ([]string, error) {
+	patterns := []string{".pebble/", ".git/"}
+	data, err := os.ReadFile(filepath.Join(root, ".pebbleignore"))
+	if os.IsNotExist(err) {
+		return patterns, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for n, line := range strings.Split(string(data), "\n") {
+		p := strings.TrimSpace(line)
+		if p == "" || strings.HasPrefix(p, "#") {
+			continue
+		}
+		if strings.HasPrefix(p, "!") || strings.Contains(p, "**") || strings.Contains(p, "\\") {
+			return nil, fmt.Errorf(".pebbleignore:%d: negation, ** and backslashes are not supported", n+1)
+		}
+		if _, err := path.Match(strings.Trim(p, "/"), ""); err != nil {
+			return nil, fmt.Errorf(".pebbleignore:%d: %w", n+1, err)
+		}
+		patterns = append(patterns, p)
+	}
+	return patterns, nil
+}
+func (f *FileIndexGenerator) shouldIgnore(file string, isDir bool) bool {
+	rel, err := filepath.Rel(f.rootPath, file)
 	if err != nil {
 		return true
 	}
-	
-	// Normalize path separators
-	relPath = filepath.ToSlash(relPath)
-	
-	for _, pattern := range f.ignorePatterns {
-		pattern = filepath.ToSlash(pattern)
-		
-		// Simple wildcard matching
-		if strings.HasPrefix(pattern, "*") {
-			suffix := pattern[1:]
-			if strings.HasSuffix(relPath, suffix) {
-				return true
-			}
-		} else if strings.HasSuffix(pattern, "*") {
-			prefix := pattern[:len(pattern)-1]
-			if strings.HasPrefix(relPath, prefix) {
-				return true
-			}
-		} else if relPath == pattern {
+	rel = filepath.ToSlash(rel)
+	// Metadata must never become part of a snapshot, even without ignore patterns.
+	for _, part := range strings.Split(rel, "/") {
+		if strings.EqualFold(part, ".pebble") || strings.EqualFold(part, ".git") {
 			return true
 		}
-		
-		// Check if it's a directory pattern
-		if strings.HasSuffix(pattern, "/") {
-			dir := strings.TrimSuffix(pattern, "/")
-			if strings.HasPrefix(relPath, dir+"/") {
-				return true
-			}
+	}
+	for _, p := range f.ignorePatterns {
+		p = filepath.ToSlash(p)
+		dirOnly := strings.HasSuffix(p, "/")
+		if dirOnly && !isDir {
+			continue
+		}
+		anchored := strings.HasPrefix(p, "/")
+		p = strings.Trim(p, "/")
+		candidate := rel
+		if !anchored && !strings.Contains(p, "/") {
+			candidate = path.Base(rel)
+		}
+		if match, _ := path.Match(p, candidate); match {
+			return true
 		}
 	}
-	
 	return false
 }
-
-// GenerateIndex generates a file index for the root path
 func (f *FileIndexGenerator) GenerateIndex() (*Index, error) {
 	entries := []IndexEntry{}
-	
-	err := filepath.Walk(f.rootPath, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(f.rootPath, func(file string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		
-		// Skip the root path itself
-		if path == f.rootPath {
+		if file == f.rootPath {
 			return nil
 		}
-		
-		// Check if should ignore
-		if f.shouldIgnore(path) {
+		if f.shouldIgnore(file, info.IsDir()) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		
-		// Get relative path
-		relPath, err := filepath.Rel(f.rootPath, path)
+		if info.IsDir() {
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("unsupported file type at %s (symlinks and special files are not yet supported)", file)
+		}
+		rel, err := filepath.Rel(f.rootPath, file)
 		if err != nil {
 			return err
 		}
-		
-		// Get file mode
-		mode := info.Mode()
-		
-		// Skip symlinks for now
-		if mode&os.ModeSymlink != 0 {
-			return nil
+		obj, err := CreateBlob(file)
+		if err != nil {
+			return err
 		}
-		
-		entry := IndexEntry{
-			Path:   relPath,
-			Mode:   mode.String(),
-			Size:   info.Size(),
-			Mtime:  info.ModTime(),
-		}
-		
-		// If it's a regular file, compute hash
-		if info.Mode().IsRegular() {
-			obj, err := CreateBlob(path)
-			if err != nil {
-				return fmt.Errorf("failed to create blob for %s: %w", path, err)
-			}
-			entry.Hash = obj.Hash
-		}
-		
-		entries = append(entries, entry)
-		
+		entries = append(entries, IndexEntry{Path: filepath.ToSlash(rel), Mode: info.Mode().String(), Size: obj.Size, Mtime: info.ModTime(), Hash: obj.Hash})
 		return nil
 	})
-	
 	if err != nil {
-		return nil, fmt.Errorf("failed to walk directory: %w", err)
+		return nil, err
 	}
-	
-	index := CreateIndex(entries)
-	
-	// Convert to Index struct
-	result := &Index{
-		Version:   2,
-		Generator: "pebble/1.0",
-		Entries:   entries,
-		Hash:      index.Hash,
-	}
-	
-	return result, nil
+	obj := CreateIndex(entries)
+	return &Index{Version: 2, Generator: "pebble/1.0", Entries: entries, Hash: obj.Hash}, nil
 }
-
-// GetFileHashes returns a map of file paths to their hashes
 func (f *FileIndexGenerator) GetFileHashes() (map[string]string, error) {
-	index, err := f.GenerateIndex()
+	idx, err := f.GenerateIndex()
 	if err != nil {
 		return nil, err
 	}
-	
-	hashes := make(map[string]string)
-	for _, entry := range index.Entries {
-		hashes[entry.Path] = entry.Hash
+	m := map[string]string{}
+	for _, e := range idx.Entries {
+		m[e.Path] = e.Hash
 	}
-	
-	return hashes, nil
+	return m, nil
 }
-
-// GetModifiedFiles returns files modified since the given time
 func (f *FileIndexGenerator) GetModifiedFiles(since time.Time) ([]string, error) {
-	index, err := f.GenerateIndex()
+	idx, err := f.GenerateIndex()
 	if err != nil {
 		return nil, err
 	}
-	
-	var modified []string
-	for _, entry := range index.Entries {
-		if entry.Mtime.After(since) {
-			modified = append(modified, entry.Path)
+	var files []string
+	for _, e := range idx.Entries {
+		if e.Mtime.After(since) {
+			files = append(files, e.Path)
 		}
 	}
-	
-	return modified, nil
+	return files, nil
 }

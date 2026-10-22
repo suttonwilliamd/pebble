@@ -4,17 +4,33 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go: ['1.21.x', stable]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.21.x'
-      - name: Verify module
-        run: go mod tidy && git diff --exit-code
+          go-version: ${{ matrix.go }}
+      - name: Verify modules
+        run: go mod verify
       - name: Build
         run: go build ./...
+      - name: Vet
+        run: go vet ./...
       - name: Test
-        run: go test ./...
+        run: go test ./... -count=1
+      - name: Race detection
+        if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
+        run: go test -race ./...
+      - name: Fuzz streaming roundtrip
+        if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
+        run: go test ./internal/rock -run '^$' -fuzz FuzzStreamRoundTrip -fuzztime 20s

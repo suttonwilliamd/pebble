@@ -4,10 +4,10 @@
 *.so
 *.dylib
 
-# Go-specific
-# DON'T ignore *.go - we need source files!
-*.mod
-*.sum
+# Local Pebble metadata (safe Git/Pebble side-by-side dogfooding)
+.pebble/
+
+# Go-specific (module manifests and checksums belong in version control)
 bin/
 pkg/
 

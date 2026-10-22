@@ -24,7 +24,7 @@ type Chunker interface {
 
 // FastCDC is a fast content-defined chunking algorithm
 type FastCDC struct {
-	MinChunkSize  int
+	MinChunkSize int
 	MaxChunkSize int
 	WindowSize   int
 	Mask         uint32
@@ -36,9 +36,9 @@ type FastCDC struct {
 func NewFastCDC(minChunk, maxChunk, window int) *FastCDC {
 	// FastCDC parameters
 	prime := uint32(2083806171) // Large prime for polynomial hash
-	mask := uint32(0x3FFF)       // 14-bit mask - ~1/16K chance per position
-	target := uint32(0x1000)      // Specific target value to reduce false positives
-	
+	mask := uint32(0x3FFF)      // 14-bit mask - ~1/16K chance per position
+	target := uint32(0x1000)    // Specific target value to reduce false positives
+
 	return &FastCDC{
 		MinChunkSize: minChunk,
 		MaxChunkSize: maxChunk,
@@ -64,7 +64,17 @@ func computeHash(data []byte, prime uint32) uint32 {
 }
 
 // FastCDC Chunk performs content-defined chunking using Rabin fingerprint
+func (f *FastCDC) validate() error {
+	if f.MinChunkSize <= 0 || f.MaxChunkSize < f.MinChunkSize || f.WindowSize <= 0 || f.WindowSize > f.MinChunkSize || f.MaxChunkSize == int(^uint(0)>>1) {
+		return fmt.Errorf("invalid chunker sizes: require 0 < window <= min <= max < MaxInt")
+	}
+	return nil
+}
+
 func (f *FastCDC) Chunk(data []byte) ([]Chunk, error) {
+	if err := f.validate(); err != nil {
+		return nil, err
+	}
 	if len(data) == 0 {
 		return nil, nil
 	}
@@ -95,19 +105,19 @@ func (f *FastCDC) Chunk(data []byte) ([]Chunk, error) {
 			chunks = append(chunks, chunk)
 			break
 		}
-		
+
 		// Compute initial hash for the first window
 		windowEnd := pos + f.WindowSize
 		hash := computeHash(data[pos:windowEnd], f.Prime)
-		
+
 		// Slide the window and check for boundaries
 		chunkEnd := -1
 		avgChunkSizeVal := (f.MinChunkSize + f.MaxChunkSize) / 2
-		
+
 		for i := windowEnd; i < len(data) && i < pos+f.MaxChunkSize; i++ {
 			// Update rolling hash FIRST (so we have hash for current window position)
 			hash = hash*f.Prime + uint32(data[i]) - primePow*uint32(data[i-f.WindowSize])
-			
+
 			// Check for chunk boundary once we've passed min size
 			if (i - pos) >= f.MinChunkSize {
 				// Primary: rolling hash boundary
@@ -140,7 +150,7 @@ func (f *FastCDC) Chunk(data []byte) ([]Chunk, error) {
 		}
 
 		chunkData := data[pos:chunkEnd]
-		
+
 		// Compute content hash (SHA-256 for deduplication)
 		contentHash := sha256.Sum256(chunkData)
 		hashStr := hex.EncodeToString(contentHash[:])
@@ -179,81 +189,46 @@ func (f *FastCDC) ChunkReader(reader io.Reader) ([]Chunk, error) {
 	return f.Chunk(data)
 }
 
-// ChunkStream chunks data from a stream (memory efficient)
+// ChunkStream uses bounded memory and exactly the same boundaries as Chunk.
+// One lookahead byte is needed by Chunk's zero-byte boundary heuristic.
 func (f *FastCDC) ChunkStream(reader io.Reader, chunkCallback func(Chunk) error) error {
-	const bufSize = 64 * 1024 // 64KB buffer
-	buf := make([]byte, bufSize+f.WindowSize) // Extra window for rolling hash
-	
-	offset := int64(0)
-	pos := 0
-	
+	if err := f.validate(); err != nil {
+		return err
+	}
+	if chunkCallback == nil {
+		return fmt.Errorf("nil chunk callback")
+	}
+	buf := make([]byte, f.MaxChunkSize+1)
+	pending := 0
+	var offset int64
 	for {
-		n, err := reader.Read(buf[pos:])
-		if n == 0 && err == io.EOF {
-			break
-		}
-		if err != nil && err != io.EOF {
+		n, err := io.ReadFull(reader, buf[pending:])
+		total := pending + n
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 			return fmt.Errorf("read error: %w", err)
 		}
-		
-		total := pos + n
-		
-		// Process chunks from buffer
-		chunkPos := 0
-		for chunkPos < total-f.WindowSize {
-			// Find chunk boundary
-			windowEnd := chunkPos + f.WindowSize
-			hash := computeHash(buf[chunkPos:windowEnd], f.Prime)
-			
-			chunkEnd := -1
-			for i := windowEnd; i < total && int64(i) < int64(chunkPos)+int64(f.MaxChunkSize); i++ {
-				if (i-chunkPos) >= f.MinChunkSize && (hash&f.Mask) == f.Target {
-					chunkEnd = i
-					break
+		chunks, chunkErr := f.Chunk(buf[:total])
+		if chunkErr != nil {
+			return chunkErr
+		}
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			for _, c := range chunks {
+				c.Offset = offset
+				if err := chunkCallback(c); err != nil {
+					return err
 				}
-				hash = hash*f.Prime + uint32(buf[i]) - uint32(buf[i-f.WindowSize])*f.Prime
+				offset += c.Size
 			}
-			
-			if chunkEnd == -1 {
-				chunkEnd = chunkPos + f.MaxChunkSize
-				if chunkEnd > total-f.WindowSize {
-					// Not enough data for full chunk, save for next iteration
-					break
-				}
-			}
-			
-			chunkData := buf[chunkPos:chunkEnd]
-			contentHash := sha256.Sum256(chunkData)
-			
-			chunk := Chunk{
-				Hash:    hex.EncodeToString(contentHash[:]),
-				Offset:  offset,
-				Size:    int64(len(chunkData)),
-				Content: make([]byte, len(chunkData)),
-			}
-			copy(chunk.Content, chunkData)
-			
-			if err := chunkCallback(chunk); err != nil {
-				return err
-			}
-			
-			offset += int64(len(chunkData))
-			chunkPos = chunkEnd
+			return nil
 		}
-		
-		// Keep remaining data in buffer
-		remaining := total - chunkPos
-		if remaining > 0 {
-			copy(buf[:remaining], buf[chunkPos:total])
+		c := chunks[0]
+		c.Offset = offset
+		if err := chunkCallback(c); err != nil {
+			return err
 		}
-		pos = remaining
-		
-		if err == io.EOF {
-			break
-		}
+		offset += c.Size
+		pending = copy(buf, buf[int(c.Size):total])
 	}
-	
-	return nil
 }
 
 // DeduplicateChunks identifies duplicate chunks
@@ -305,7 +280,7 @@ func ComputeDeduplicationRatio(chunks []Chunk) float64 {
 
 // ChunkStats holds statistics about chunks
 type ChunkStats struct {
-	TotalChunks         int
+	TotalChunks        int
 	UniqueChunks       int
 	TotalSize          int64
 	UniqueSize         int64
@@ -327,7 +302,7 @@ func ComputeStats(chunks []Chunk) ChunkStats {
 
 	for _, chunk := range chunks {
 		totalSize += chunk.Size
-		
+
 		if chunk.Size < minSize || minSize == -1 {
 			minSize = chunk.Size
 		}
@@ -344,13 +319,13 @@ func ComputeStats(chunks []Chunk) ChunkStats {
 	avgSize := float64(totalSize) / float64(len(chunks))
 
 	return ChunkStats{
-		TotalChunks:         len(chunks),
-		UniqueChunks:        len(uniqueChunks),
-		TotalSize:           totalSize,
-		UniqueSize:          uniqueSize,
-		DeduplicationRatio:  float64(uniqueSize) / float64(totalSize),
-		AvgChunkSize:        avgSize,
-		MinChunkSize:        minSize,
-		MaxChunkSize:        maxSize,
+		TotalChunks:        len(chunks),
+		UniqueChunks:       len(uniqueChunks),
+		TotalSize:          totalSize,
+		UniqueSize:         uniqueSize,
+		DeduplicationRatio: float64(uniqueSize) / float64(totalSize),
+		AvgChunkSize:       avgSize,
+		MinChunkSize:       minSize,
+		MaxChunkSize:       maxSize,
 	}
 }

@@ -1,171 +1,125 @@
 # Pebble
 
-Pebble is a binary-first Git replacement (the next Git). Designed for correctness, immutability, and superior binary asset handling at scale.
+Pebble is an **experimental, binary-first version control system** written in Go.
+The goal is a practical Git alternative for source code and binary assets. Today,
+Pebble supports a guarded **local snapshot/branch workflow**, not a complete Git
+replacement. Keep Git and independent backups while dogfooding.
 
-## Why Pebble
+## What works today
 
-| Problem | Pebble Solution |
-|---------|-----------------|
-| Git stores full snapshots, bloat on large binaries | Content-defined chunking (ROCK) with deduplication |
-| Binaries treated as opaque blobs | First-class binary diffing and storage |
-| Large repos slow to clone/push | HTTP/2 + content-addressed transfer + resumable uploads |
-| Inline conflict markers (`<<<<<<`) | Materialized conflict files, explicit resolution |
-| No built-in access control | Basic RBAC for team collaboration |
+- SHA-256-addressed blobs, deterministic file trees and linked immutable commits.
+- Whole-working-tree commits, change detection (added/modified/deleted), full log.
+- Branch creation/listing (including `feature/name`) and file-restoring checkout.
+- Checkout refuses dirty tracked files, untracked/ignored file collisions, unsafe
+  paths and corrupt target objects before changing files.
+- Object integrity verification with `pebble fsck`.
+- Repository discovery from subdirectories; explicit initialization; writer locks
+  and atomic individual metadata/object writes.
+- ROCK chunking/deduplication libraries, with bounded-memory streaming and
+  batch/stream equivalence tests. **ROCK is not yet wired into CLI commits.**
 
-**Bottom line**: If you ship binaries, media, or datasets—Pebble is purpose-built for you.
+## What does NOT work yet
 
-## Roadmap to Next Git
+- Remote collaboration: CLI `push`/`pull` deliberately fail. The prototype client
+  does not yet provide complete history transfer, safe ref negotiation or a
+  production server. Pebble cannot push to GitHub's Git endpoints.
+- Merge/combine CLI, Git import/export, clone, staging, diff, restore, branch deletion.
+- Chunk-based CLI snapshots, large-file streaming storage, compression or GC.
+  CLI blobs currently load whole files and store base64 content in JSON. Do not
+  expect large-binary scalability or storage improvements over Git yet.
+- Symlinks/special files and empty directories in snapshots. Non-ignored symlinks
+  and special files cause an error rather than being silently lost.
+- Crash-atomic checkout: ordinary I/O errors trigger a best-effort file-content
+  rollback, but power loss or process termination can interrupt checkout.
+- Full filesystem metadata preservation: executable bit on Unix is supported;
+  ACLs, arbitrary permission bits, ownership and timestamps are not preserved.
 
-See [docs/next-git-roadmap.md](docs/next-git-roadmap.md) for phased deliverables and metrics.
+See [the dogfood evaluation and next priorities](docs/dogfood-readiness.md) and the
+[longer-term roadmap](docs/next-git-roadmap.md). Older design/checklist documents
+are plans, not evidence of shipped functionality.
 
-### Phase 1: Core VCS (In Progress)
-- [x] Snapshot system (immutable commits)
-- [x] ROCK binary chunking
-- [ ] Combine/conflict engine
-- [ ] Content-addressed storage (CAS)
-- [ ] Remote sync protocol
+## Install
 
-### Phase 2: Collaboration
-- Delta snapshots
-- Git interoperability (import/export)
-- Enhanced conflict resolution
-- Performance benchmarking
+Requires Go 1.21 or newer. Git is needed only to download/update this source.
+The SQLite dependency is pure Go; no separate SQLite installation is required.
 
-### Phase 3: Enterprise
-- RBAC / access control
-- Tiered storage
-- IDE integrations
-- Self-hosted server
-
-### Core Features
-
-- **Immutable History**: All commits are snapshot-based and immutable, ensuring a reliable and tamper-proof history.
-- **Binary Asset Handling**: First-class support for binary assets using content-defined chunking, optimized for storage and transfer.
-- **Conflict Resolution**: Materialized conflict files for clear and actionable conflict resolution, avoiding inline markers.
-- **Efficient Storage**: Content-addressed storage with deduplication and garbage collection, minimizing storage requirements.
-- **Remote Sync**: HTTP/2-based remote sync protocol with resumable transfers and secure authentication (SSH and HTTPS with tokens).
-
-### Advanced Features
-
-- **Delta Snapshots**: Store only the differences between snapshots, optimizing performance and reducing storage requirements.
-- **Enhanced Conflict Resolution**: Improved conflict detection and resolution with a user-friendly interface and better conflict handling.
-- **Git Interoperability**: Tools to import Git repositories into Pebble and export Pebble repositories to Git, ensuring compatibility with existing Git workflows.
-- **Performance Optimization**: Benchmarked and optimized critical operations, including snapshot creation, retrieval, chunking, deduplication, and remote sync.
-- **Access Control**: Basic role-based access control (RBAC) to restrict access based on user roles, ensuring secure collaboration.
-
-## Architecture
-
-### Core Systems
-
-- **Snapshot System**: Immutable, content-addressed snapshots representing complete filesystem states.
-- **ROCK Binary System**: Content-defined chunking for efficient binary asset handling.
-- **Combine Engine**: Explicit conflict materialization for clear and actionable conflict resolution.
-
-### Storage Layer
-
-- **Content-Addressed Storage**: Objects stored using SHA-256 hashes for unique identification and direct access.
-- **SQLite Metadata Database**: Efficient storage and retrieval of metadata for objects and snapshots.
-- **Two-Tier Cache**: Memory and disk cache for fast access to frequently used objects.
-- **Reference Counting**: Track references to objects, enabling garbage collection.
-- **Garbage Collection**: Identify and remove unreferenced objects, freeing up storage space.
-
-### Remote Sync Protocol
-
-- **HTTP/2 Protocol**: Efficient communication with multiplexed requests and responses.
-- **Content-Addressed Transfer**: Transfer objects using content-addressed identifiers for direct access.
-- **Resumable Transfers**: Support for resumable transfers, handling network interruptions gracefully.
-- **SSH Authentication**: Secure authentication using SSH keys.
-- **HTTPS with Tokens**: Secure authentication using HTTPS with tokens.
-
-### CLI Interface
-
-- **Commit**: Create a new commit with the current state of the repository.
-- **Status**: Show the current status of the repository, displaying modified, added, and deleted files.
-- **Log**: Show the commit history of the repository, displaying commit messages and timestamps.
-- **Branch**: Manage branches in the repository, including creation, deletion, and listing.
-- **Checkout**: Switch to a different branch or snapshot, updating the working directory.
-- **Push**: Push changes to a remote repository, transferring objects and metadata.
-- **Pull**: Pull changes from a remote repository, retrieving objects and metadata.
-
-## Getting Started
-
-### Prerequisites
-
-- Go 1.21.x (minimum supported toolchain)
-- Git
-- SQLite (runtime only; driver is bundled via pure-Go modernc.org/sqlite)
-
-### Platform caveats
-
-- Go 1.19/1.20 are not supported.
-- CI validates on Go 1.21.x (`.github/workflows/ci.yml`).
-- If you hit toolchain issues, run:
-
-```bash
-go version
-go mod tidy
-go test ./...
-```
-
-### Installation
-
-1. Clone the repository:
-
-```bash
+```sh
 git clone https://github.com/suttonwilliamd/pebble.git
 cd pebble
-```
-
-2. Build the project:
-
-```bash
-go build -o pebble ./cmd/pebble
-```
-
-3. Run the tests:
-
-```bash
 go test ./...
+go build -o pebble ./cmd/pebble  # Windows: -o pebble.exe
 ```
 
-### Usage
+Alternatively, `go install github.com/suttonwilliamd/pebble/cmd/pebble@latest`
+installs into your Go bin directory. Add it to PATH.
 
-1. Initialize a new Pebble repository:
+## Dogfood safely
 
-```bash
+Start in a disposable copy or a small project that remains backed up with Git.
+Do not delete `.git`; add `.pebble/` to that project's `.gitignore` if using both.
+Pebble always excludes `.git` and `.pebble` metadata from snapshots.
+
+Set your identity (required; no more placeholder author):
+
+```powershell
+$env:PEBBLE_AUTHOR = "Your Name"
+$env:PEBBLE_EMAIL = "you@example.com"
+```
+
+On POSIX shells, use `export PEBBLE_AUTHOR="Your Name"` and
+`export PEBBLE_EMAIL="you@example.com"` instead.
+
+```sh
 pebble init
-```
-
-2. Create a new commit:
-
-```bash
-pebble commit "Initial commit"
-```
-
-3. View the commit history:
-
-```bash
+pebble status
+pebble commit -m "Initial snapshot"
+pebble branch experiment
+pebble checkout experiment
+# edit files
+pebble status
+pebble commit "Try a change"
 pebble log
+pebble checkout main
+pebble fsck
 ```
 
-4. Push changes to a remote repository:
+Commits include **all non-ignored files**, additions and deletions; there is no
+staging area. Unchanged commits are rejected. Status uses committed HEAD, not an
+index cache. Untracked files may survive checkout unless they collide with a
+target file, in which case checkout refuses. File/directory transitions are
+currently rejected; empty directories left by checkout are harmless.
 
-```bash
-pebble push origin main
+### Ignore rules
+
+`.pebbleignore` supports blank lines, `#` comments, `*.log` globs, `build/`
+directory rules, `/root-only.txt` anchoring and `assets/cache/` relative paths.
+Patterns without a slash match names at any depth. Use `/` separators, including
+on Windows. Rules only exclude untracked files; already tracked files stay
+tracked. **This is not Git ignore syntax:** negation (`!`), `**`, escaping and
+backslashes are unsupported (negation, `**` and backslashes produce errors).
+Review `pebble status` for secrets before committing; `.gitignore` is not read.
+
+### Safety and recovery
+
+- Do not edit files concurrently with commit/checkout. The lock serializes Pebble
+  writers, not editors or other tools. Repository metadata is assumed locally
+  trusted; do not open a malicious `.pebble` directory.
+- If an interrupted process leaves `.pebble/write.lock`, first ensure no Pebble
+  writer is running, then remove that lock manually. Never remove an active lock.
+- After interruption, back up the entire directory and run `pebble fsck`.
+  Committed objects remain available; automatic checkout recovery is not yet built.
+- Legacy snapshots containing Windows backslash paths are not portable to the
+  new guarded checkout. Keep the original working copy and Git backup; there is
+  no automatic migration yet.
+
+## Development
+
+```sh
+go test ./...
+go vet ./...
+go test ./internal/rock -run '^$' -fuzz FuzzStreamRoundTrip -fuzztime 20s
 ```
 
-## Documentation
-
-- [Phase 1: Core VCS Development Plan Checklist](docs/checklists/phase_1_core_vcs_checklist.md)
-- [Phase 2: Collaboration Checklist](docs/checklists/phase_2_collaboration_checklist.md)
-- [Phase 3: Enterprise Checklist](docs/checklists/phase_3_enterprise_checklist.md)
-
-## Contributing
-
-Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this project.
-
-## Acknowledgments
-
-- Inspired by Git and other modern version control systems
-- Built with Go for performance and reliability
-- Designed for correctness, immutability, clarity, and continuous progress
+CI exercises Windows, Linux and macOS, the minimum and stable Go toolchains, and
+Linux race detection. Contributions should include regression tests, especially
+for data preservation and corruption handling.
