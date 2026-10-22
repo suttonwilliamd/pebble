@@ -1,0 +1,35 @@
+name: pebble-dogfood
+
+services:
+  pebble:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PEBBLE_PORT:-7931}:8080"
+    volumes:
+      - pebble-data:/data
+    secrets:
+      - pebble-token
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 64
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  pebble-data:
+
+secrets:
+  pebble-token:
+    file: ${PEBBLE_TOKEN_FILE:?Set PEBBLE_TOKEN_FILE to an absolute secret file path}

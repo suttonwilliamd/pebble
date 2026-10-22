@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/suttonwilliamd/pebble/internal/snapshot"
+	"github.com/suttonwilliamd/pebble/internal/syncproto"
 )
 
 func main() {
@@ -32,11 +34,14 @@ Usage:
   pebble branch [name]            List branches or create one at HEAD
   pebble checkout <branch>        Restore a branch (refuses tracked changes)
   pebble restore <file>           Discard edits to one file, restoring HEAD
+  pebble push <url> [branch]       Push HEAD to a remote branch (default: current)
+  pebble fetch <url> [branch]      Fetch into incoming/<branch> (default: main)
   pebble fsck                     Verify all reachable objects
   pebble help                     Show this help
 
 Identity: set PEBBLE_AUTHOR and PEBBLE_EMAIL before committing.
-Remote push/pull are not ready. Keep Git and independent backups.`)
+Remotes: PEBBLE_TOKEN_FILE; HTTPS or loopback/SSH tunnel. 32 MiB limit.
+Fetch never changes working files. Pull/merge are not ready; keep Git and backups.`)
 }
 func run(args []string, cwd string, w io.Writer) error {
 	if len(args) == 0 {
@@ -47,11 +52,11 @@ func run(args []string, cwd string, w io.Writer) error {
 		usage(w)
 		return nil
 	}
-	if cmd == "push" || cmd == "pull" {
-		return errors.New("remote sync is experimental and disabled: complete history transfer and safe ref updates are not implemented; keep using Git for remotes")
+	if cmd == "pull" {
+		return errors.New("pull/merge is not implemented: use pebble fetch <url> [branch], inspect history, then checkout incoming/<branch>; keep Git and backups")
 	}
 	switch cmd {
-	case "init", "status", "log", "branch", "checkout", "commit", "restore", "fsck":
+	case "init", "status", "log", "branch", "checkout", "commit", "restore", "push", "fetch", "fsck":
 	default:
 		return fmt.Errorf("unknown command %q; run pebble help", cmd)
 	}
@@ -198,6 +203,8 @@ func run(args []string, cwd string, w io.Writer) error {
 			return err
 		}
 		fmt.Fprintln(w, "Restored from HEAD:", filepath.ToSlash(rel))
+	case "push", "fetch":
+		return handleSync(cmd, params, repo, w)
 	case "fsck":
 		if len(params) != 0 {
 			return errors.New("usage: pebble fsck")
@@ -208,5 +215,61 @@ func run(args []string, cwd string, w io.Writer) error {
 		}
 		fmt.Fprintf(w, "Verified %d reachable objects\n", n)
 	}
+	return nil
+}
+
+func handleSync(cmd string, params []string, repo *snapshot.Repository, w io.Writer) error {
+	if len(params) < 1 || len(params) > 2 {
+		return fmt.Errorf("usage: pebble %s <url> [branch]", cmd)
+	}
+	head, err := repo.GetHead()
+	if err != nil {
+		return err
+	}
+	branch := "main"
+	if cmd == "push" {
+		branch = strings.TrimPrefix(head, "heads/")
+	}
+	if len(params) == 2 {
+		branch = params[1]
+	}
+	ref := "heads/" + branch
+	if err = snapshot.ValidateRef(ref); err != nil {
+		return err
+	}
+	token, err := syncproto.ReadTokenFile(os.Getenv("PEBBLE_TOKEN_FILE"))
+	if err != nil {
+		return err
+	}
+	client, err := syncproto.NewClient(params[0], token)
+	if err != nil {
+		return err
+	}
+	if cmd == "push" {
+		if err = client.Push(context.Background(), repo, head, ref); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "Pushed HEAD to remote branch %s\n", branch)
+		return nil
+	}
+	target := "heads/incoming/" + branch
+	if head == target {
+		return errors.New("cannot fetch into the checked-out incoming branch; checkout a local work branch first")
+	}
+	expected, err := repo.GetRef(target)
+	if os.IsNotExist(err) {
+		expected = ""
+	} else if err != nil {
+		return err
+	}
+	bundle, err := client.Fetch(context.Background(), ref)
+	if err != nil {
+		return err
+	}
+	bundle.Ref = target
+	if err = repo.ImportBundle(bundle, expected); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "Fetched %s into incoming/%s; working files unchanged\nInspect with: pebble checkout incoming/%s\n", branch, branch, branch)
 	return nil
 }

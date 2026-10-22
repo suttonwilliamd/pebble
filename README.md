@@ -2,8 +2,9 @@
 
 Pebble is an **experimental, binary-first version control system** written in Go.
 The goal is a practical Git alternative for source code and binary assets. Today,
-Pebble supports a guarded **local snapshot/branch workflow**, not a complete Git
-replacement. Keep Git and independent backups while dogfooding.
+Pebble supports a guarded **local snapshot/branch workflow** and an experimental
+**authenticated remote test server**, not a complete Git replacement. Keep Git
+and independent backups while dogfooding.
 
 ## What works today
 
@@ -16,14 +17,19 @@ replacement. Keep Git and independent backups while dogfooding.
 - Object integrity verification with `pebble fsck`.
 - Repository discovery from subdirectories; explicit initialization; writer locks
   and atomic individual metadata/object writes.
+- Experimental `pebbled` server/website, authenticated push/fetch, complete typed
+  history transfer and fast-forward compare-and-swap updates. Docker Compose
+  deployment defaults to loopback-only with a dedicated data volume.
 - ROCK chunking/deduplication libraries, with bounded-memory streaming and
   batch/stream equivalence tests. **ROCK is not yet wired into CLI commits.**
 
 ## What does NOT work yet
 
-- Remote collaboration: CLI `push`/`pull` deliberately fail. The prototype client
-  does not yet provide complete history transfer, safe ref negotiation or a
-  production server. Pebble cannot push to GitHub's Git endpoints.
+- Production remote collaboration: the new v1 server is a **single-repository lab**,
+  with a shared read/write token, 32 MiB complete-history transfer limit and no
+  incremental/resumable sync. `pull`/merge remain unavailable; use `fetch` and
+  explicit checkout. Pebble cannot push to GitHub's Git endpoints.
+  The old `internal/remote` prototype is not mounted or used by the new server.
 - Merge/combine CLI, Git import/export, clone, staging, diff, branch deletion.
 - Chunk-based CLI snapshots, large-file streaming storage, compression or GC.
   CLI blobs currently load whole files and store base64 content in JSON. Do not
@@ -93,8 +99,10 @@ without changing history and refuses untracked paths, directories and symlinks.
 Commits include **all non-ignored files**, additions and deletions; there is no
 staging area. Unchanged commits are rejected. Status uses committed HEAD, not an
 index cache. Untracked files may survive checkout unless they collide with a
-target file, in which case checkout refuses. File/directory transitions are
-currently rejected; empty directories left by checkout are harmless.
+target file, in which case checkout refuses unless contents and executable mode
+are identical (then the existing file is adopted without rewriting).
+File/directory transitions are currently rejected; empty directories left by
+checkout are harmless.
 
 ### Ignore rules
 
@@ -118,6 +126,32 @@ Review `pebble status` for secrets before committing; `.gitignore` is not read.
 - Legacy snapshots containing Windows backslash paths are not portable to the
   new guarded checkout. Keep the original working copy and Git backup; there is
   no automatic migration yet.
+
+## Remote test service
+
+See [the Garfield deployment and remote test runbook](docs/garfield-deployment.md).
+It includes the Docker Compose stack, token handling, SSH forwarding, a two-client
+acceptance test, optional Cloudflare considerations and rollback boundaries.
+Garfield has **not yet been deployed**; SSH authentication must be arranged first.
+
+For a local test server, build `go build -o bin/pebbled ./cmd/pebbled`, generate a
+private strong token file outside the repository and set `PEBBLE_TOKEN_FILE`.
+Start `bin/pebbled -data /path/to/disposable-data` (Windows: use `.exe`). It listens
+on `127.0.0.1:7931` by default and shows a small static website at `/`.
+
+```sh
+pebble push http://127.0.0.1:7931          # push current HEAD, fast-forward only
+pebble fetch http://127.0.0.1:7931 main   # import incoming/main; files unchanged
+pebble checkout incoming/main
+pebble branch work
+pebble checkout work                    # do not develop on incoming/main
+# edit, commit
+pebble push http://127.0.0.1:7931 main   # publish work HEAD to remote main
+```
+
+The CLI requires HTTPS unless connecting to loopback (including an SSH forward).
+Never expose the bare HTTP listener directly to the Internet or put tokens in
+URLs, CLI arguments, source files or chat.
 
 ## Development
 

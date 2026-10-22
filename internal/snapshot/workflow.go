@@ -317,6 +317,7 @@ func (r *Repository) Checkout(name string) error {
 	oldMap := map[string]TreeEntry{}
 	backup := map[string][]byte{}
 	data := map[string][]byte{}
+	adopt := map[string]bool{} // Identical untracked files need not be overwritten.
 	for _, e := range old {
 		oldMap[e.Name] = e
 		p, err := r.safePath(e.Name)
@@ -338,8 +339,18 @@ func (r *Repository) Checkout(name string) error {
 			return err
 		}
 		if info, statErr := os.Lstat(p); statErr == nil {
-			if _, tracked := oldMap[e.Name]; !tracked || !info.Mode().IsRegular() {
-				return fmt.Errorf("checkout would overwrite untracked file or directory: %s", e.Name)
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("checkout would overwrite directory: %s", e.Name)
+			}
+			if _, tracked := oldMap[e.Name]; !tracked {
+				existing, err := CreateBlob(p)
+				if err != nil {
+					return err
+				}
+				if existing.Hash != e.Hash || executable(info.Mode().String()) != executable(e.Mode) {
+					return fmt.Errorf("checkout would overwrite untracked file: %s", e.Name)
+				}
+				adopt[e.Name] = true
 			}
 		} else if !os.IsNotExist(statErr) {
 			return statErr
@@ -379,6 +390,9 @@ func (r *Repository) Checkout(name string) error {
 		}
 	}
 	for _, e := range target {
+		if adopt[e.Name] {
+			continue
+		}
 		p := filepath.Join(r.rootPath, filepath.FromSlash(e.Name))
 		if err = os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 			return rollback(err)

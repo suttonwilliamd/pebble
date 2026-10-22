@@ -121,7 +121,7 @@ func validateRef(ref string) error {
 			}
 		}
 	}
-	return nil
+	return validFilePath(ref)
 }
 func (r *Repository) GetHead() (string, error) {
 	data, err := os.ReadFile(r.headPath)
@@ -175,7 +175,7 @@ func (r *Repository) GetRefs() ([]Ref, error) {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+		if info.IsDir() || strings.HasPrefix(info.Name(), ".pebble-tmp-") {
 			return nil
 		}
 		rel, err := filepath.Rel(r.refsPath, path)
@@ -215,8 +215,14 @@ func (r *Repository) StoreObject(obj *Object) error {
 		return err
 	}
 	if _, err := os.Stat(path); err == nil {
-		_, err = r.GetObject(obj.Hash)
-		return err
+		existing, err := r.GetObject(obj.Hash)
+		if err != nil {
+			return err
+		}
+		if existing.Type != obj.Type {
+			return fmt.Errorf("object type collision for %s", obj.Hash)
+		}
+		return nil
 	} else if !os.IsNotExist(err) {
 		return err
 	}

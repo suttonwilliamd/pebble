@@ -2,12 +2,30 @@
 
 ## Verdict
 
-Suitable for **experimental local use on backed-up small projects**, not as the
+Suitable for **experimental local/remote tests on backed-up small projects**, not as the
 sole copy of valuable work or a team Git replacement. The baseline tests passed,
 but the original CLI was much less complete than its README claimed. There were
 no CLI/snapshot tests covering the basic user workflow.
 
-## Blockers addressed in this checkpoint
+## Remote follow-up
+
+A new authenticated `pebbled` test server, static website and guarded CLI
+push/fetch now transfer complete typed history, verify hashes and enforce
+fast-forward compare-and-swap updates. Fetch never changes working files and
+checks HEAD under the writer lock before publishing its incoming branch.
+`pull`/merge remain disabled. The legacy remote prototype is not used.
+
+The protocol is bounded to 32 MiB JSON and 50,000 objects; it is not incremental
+or suitable for large binary repositories. Go 1.21/current tests and an actual
+local two-client server-process roundtrip (including binary hashes, stale-push
+rejection and restart persistence) passed. CI additionally exercises Docker
+Compose with non-root secret access, a persistent volume and container restart.
+
+See [the deployment runbook](garfield-deployment.md). Garfield has not been
+changed: SSH authentication is still needed, and no DNS/tunnel modifications
+have been made. Server-side backup/restore validation remains pending.
+
+## Blockers addressed in the original local checkpoint
 
 | Finding | Change |
 | --- | --- |

@@ -1,0 +1,13 @@
+.git
+.pebble
+**/.pebble
+.env
+.env.*
+**/.env
+**/.env.*
+**/*token*
+!internal/syncproto/token.go
+bin
+coverage
+node_modules
+vendor

@@ -63,6 +63,7 @@ func TestDogfoodCLI(t *testing.T) {
 	}
 }
 func TestCLIErrors(t *testing.T) {
+	t.Setenv("PEBBLE_TOKEN_FILE", "")
 	t.Setenv("PEBBLE_AUTHOR", "")
 	t.Setenv("PEBBLE_EMAIL", "")
 	root := t.TempDir()
