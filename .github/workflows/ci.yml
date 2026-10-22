@@ -65,7 +65,7 @@ jobs:
         run: |
           docker compose -f deploy/docker/compose.yaml config --quiet
           docker compose -f deploy/docker/compose.yaml up -d --build
-          curl --fail --retry 20 --retry-connrefused --retry-delay 1 http://127.0.0.1:7931/healthz
+          curl --fail --retry 20 --retry-all-errors --retry-delay 1 http://127.0.0.1:7931/healthz
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7931/v1/refs)" = 401
       - name: Two-client remote roundtrip and stale-push rejection
         run: |
@@ -96,7 +96,7 @@ jobs:
       - name: Verify persistence after restart
         run: |
           docker compose -f deploy/docker/compose.yaml restart
-          curl --fail --retry 20 --retry-connrefused --retry-delay 1 http://127.0.0.1:7931/healthz
+          curl --fail --retry 20 --retry-all-errors --retry-delay 1 http://127.0.0.1:7931/healthz
           c=$(mktemp -d); cd "$c"
           export PEBBLE_TOKEN_FILE="$RUNNER_TEMP/pebble-client-token"
           "$RUNNER_TEMP/pebble" init

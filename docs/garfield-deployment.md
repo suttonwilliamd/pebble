@@ -6,16 +6,25 @@ The v1 test server is `cmd/pebbled`; the container definition is
 `deploy/docker/compose.yaml`. It serves one isolated repository and a small landing
 page. It does **not** use the legacy `internal/remote` prototype.
 
-Garfield deployment is **not yet performed**: SSH reaches Garfield from the
-workstation, but authentication is denied. No Garfield services, firewall rules,
-Cloudflare configuration or DNS records have been changed. Obtain an approved
-SSH user/key before deployment. Never paste private keys, passwords or tokens
-into chat or Git.
+Garfield is **deployed loopback-only** as of 2026-10-22, using server code at
+`b56fce6`, a dedicated data volume and disposable test data. Independent client
+repositories on Garfield passed complete three-commit history transfer, 1 MiB
+binary byte/hash checks, stale-push rejection (409), invalid-token rejection (401),
+invalid-bundle rejection (400), and persistence after a container restart.
+A stopped-volume backup was restored into a separate temporary volume/container
+on port 7932 and matched the original history and bytes. The restore resources
+were then removed. An off-host backup copy was SHA-256 checked.
 
-Start with **loopback + SSH forwarding**, using disposable data. A Cloudflare
-hostname is optional after the remote acceptance tests pass and the owner approves
-that specific hostname/exposure. Leave the apex website, dashboard, torrents,
-Hermes, and every existing stack/tunnel route unchanged.
+**Workstation access is not yet enabled.** Garfield's effective SSH configuration
+sets `AllowTcpForwarding no`; an attempted tunnel was denied and closed. This
+policy was not changed. The host's cloudflared service is active, but no local
+`/etc/cloudflared/config.yml` was found; its managed-route configuration has not
+been verified. No DNS, tunnel, firewall or existing-service changes were made.
+
+Continue using disposable data. An ingress hostname requires owner approval and
+route verification first. Leave the apex website, dashboard, torrents, Hermes,
+and every existing stack/tunnel route unchanged. Never paste private keys,
+passwords or tokens into chat or Git.
 
 ## Protocol and limits
 
@@ -37,7 +46,10 @@ Hermes, and every existing stack/tunnel route unchanged.
 - This is a trusted-operator lab, not a hostile multi-tenant service. Authenticated
   clients can consume disk space; Docker does not impose a volume disk quota here.
 
-## First deployment on Garfield (operator commands)
+## First deployment on a fresh host (operator commands)
+
+**Do not repeat initialization on the existing Garfield stack.** These commands
+are a reconstruction template, not an upgrade procedure.
 
 First inspect existing containers, listeners, disk space and backup capacity.
 Confirm `/opt/stacks/pebble` is unused and port 7931 is free. Do not reuse an
@@ -64,7 +76,7 @@ compose() {
 compose config --quiet
 compose up -d --build
 compose ps
-curl --fail http://127.0.0.1:7931/healthz
+curl --fail --retry 20 --retry-all-errors --retry-delay 1 http://127.0.0.1:7931/healthz
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7931/v1/refs # expect 401
 ```
 
@@ -84,7 +96,11 @@ Rotate by replacing both copies, preserving ownership/mode, and recreating the c
 
 ## Remote acceptance test
 
-From the workstation, forward the loopback listener:
+On a host whose SSH policy permits forwarding, forward the loopback listener.
+**This does not currently work on Garfield; do not weaken its SSH policy just to
+run this test.** Alternatively, run the independent clients on the server against
+`http://127.0.0.1:7931` (the method used for Garfield's live checks), or use a
+separately approved HTTPS ingress.
 
 ```sh
 ssh -N -L 17931:127.0.0.1:7931 suttonwilliamd@Garfield
@@ -145,7 +161,8 @@ do not fix this by binding the Pebble port to every interface.
 Use HTTPS at the edge. Retain the application bearer token. Do not log Authorization
 headers. Consider rate limits and IP restrictions before any public test. A browser-only
 Cloudflare Access policy will block the CLI; Access service-token header support is
-not implemented yet. Keep using SSH until the chosen policy is tested end to end.
+not implemented yet. Keep the service loopback-only until the chosen policy is
+tested end to end; SSH forwarding is only an option where already permitted.
 Any Cloudflare API credential should be narrowly scoped and supplied through a secret
 file/environment outside Git, never in command-line arguments or chat.
 
@@ -153,8 +170,10 @@ file/environment outside Git, never in command-line arguments or chat.
 
 Stop writes before copying the dedicated named volume, and keep an independent
 backup outside that volume. Token recovery is separate. Test restoration into a
-**different volume and loopback port**, never over the live volume. A host-side
-backup/restore drill is still required before trusting this service with valuable work.
+**different volume and loopback port**, never over the live volume. The initial
+Garfield drill passed, but scheduled backups, encryption/key recovery and retention
+are not configured. The one-off off-host fixture backup has a private file ACL;
+it is not an encrypted production backup or a guarantee for future writes.
 
 `compose stop` disables only this stack. `compose down` removes its container and
 network but preserves data. **Never use `down -v` on the persistent Garfield stack.**

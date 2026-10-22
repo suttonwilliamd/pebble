@@ -132,7 +132,9 @@ Review `pebble status` for secrets before committing; `.gitignore` is not read.
 See [the Garfield deployment and remote test runbook](docs/garfield-deployment.md).
 It includes the Docker Compose stack, token handling, SSH forwarding, a two-client
 acceptance test, optional Cloudflare considerations and rollback boundaries.
-Garfield has **not yet been deployed**; SSH authentication must be arranged first.
+Garfield is deployed **loopback-only**, with live sync, restart and independent
+backup/restore checks passed. Its SSH policy disables TCP forwarding; workstation
+access awaits an approved ingress route. No public hostname has been added.
 
 For a local test server, build `go build -o bin/pebbled ./cmd/pebbled`, generate a
 private strong token file outside the repository and set `PEBBLE_TOKEN_FILE`.

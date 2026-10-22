@@ -21,9 +21,16 @@ local two-client server-process roundtrip (including binary hashes, stale-push
 rejection and restart persistence) passed. CI additionally exercises Docker
 Compose with non-root secret access, a persistent volume and container restart.
 
-See [the deployment runbook](garfield-deployment.md). Garfield has not been
-changed: SSH authentication is still needed, and no DNS/tunnel modifications
-have been made. Server-side backup/restore validation remains pending.
+See [the deployment runbook](garfield-deployment.md). Garfield now runs an isolated
+loopback-only stack. Independent client repositories on Garfield passed complete
+history/1 MiB binary roundtrips, stale-push rejection, auth/invalid-bundle checks
+and restart persistence. A stopped-volume backup was restored into a separate
+volume/container and matched history and bytes; an off-host copy was hash checked.
+Existing containers were not restarted. No DNS/tunnel modifications were made.
+
+Garfield explicitly disables SSH TCP forwarding; that policy remains unchanged.
+Workstation-to-server API testing awaits an approved ingress route. Scheduled,
+encrypted off-host backups and retention remain unimplemented.
 
 ## Blockers addressed in the original local checkpoint
 
