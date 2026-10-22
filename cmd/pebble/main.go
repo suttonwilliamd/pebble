@@ -31,6 +31,7 @@ Usage:
   pebble log                      Show complete current-branch history
   pebble branch [name]            List branches or create one at HEAD
   pebble checkout <branch>        Restore a branch (refuses tracked changes)
+  pebble restore <file>           Discard edits to one file, restoring HEAD
   pebble fsck                     Verify all reachable objects
   pebble help                     Show this help
 
@@ -50,7 +51,7 @@ func run(args []string, cwd string, w io.Writer) error {
 		return errors.New("remote sync is experimental and disabled: complete history transfer and safe ref updates are not implemented; keep using Git for remotes")
 	}
 	switch cmd {
-	case "init", "status", "log", "branch", "checkout", "commit", "fsck":
+	case "init", "status", "log", "branch", "checkout", "commit", "restore", "fsck":
 	default:
 		return fmt.Errorf("unknown command %q; run pebble help", cmd)
 	}
@@ -181,6 +182,22 @@ func run(args []string, cwd string, w io.Writer) error {
 			return err
 		}
 		fmt.Fprintln(w, "Switched to branch:", params[0])
+	case "restore":
+		if len(params) != 1 {
+			return errors.New("usage: pebble restore <file> (discards this file's uncommitted edits)")
+		}
+		p := params[0]
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(cwd, p)
+		}
+		rel, err := filepath.Rel(repo.RootPath(), p)
+		if err != nil {
+			return err
+		}
+		if err = repo.Restore(filepath.ToSlash(rel)); err != nil {
+			return err
+		}
+		fmt.Fprintln(w, "Restored from HEAD:", filepath.ToSlash(rel))
 	case "fsck":
 		if len(params) != 0 {
 			return errors.New("usage: pebble fsck")

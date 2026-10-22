@@ -12,6 +12,7 @@ replacement. Keep Git and independent backups while dogfooding.
 - Branch creation/listing (including `feature/name`) and file-restoring checkout.
 - Checkout refuses dirty tracked files, untracked/ignored file collisions, unsafe
   paths and corrupt target objects before changing files.
+- Explicit single-file recovery from HEAD with `pebble restore <file>`.
 - Object integrity verification with `pebble fsck`.
 - Repository discovery from subdirectories; explicit initialization; writer locks
   and atomic individual metadata/object writes.
@@ -23,7 +24,7 @@ replacement. Keep Git and independent backups while dogfooding.
 - Remote collaboration: CLI `push`/`pull` deliberately fail. The prototype client
   does not yet provide complete history transfer, safe ref negotiation or a
   production server. Pebble cannot push to GitHub's Git endpoints.
-- Merge/combine CLI, Git import/export, clone, staging, diff, restore, branch deletion.
+- Merge/combine CLI, Git import/export, clone, staging, diff, branch deletion.
 - Chunk-based CLI snapshots, large-file streaming storage, compression or GC.
   CLI blobs currently load whole files and store base64 content in JSON. Do not
   expect large-binary scalability or storage improvements over Git yet.
@@ -42,6 +43,8 @@ are plans, not evidence of shipped functionality.
 
 Requires Go 1.21 or newer. Git is needed only to download/update this source.
 The SQLite dependency is pure Go; no separate SQLite installation is required.
+On macOS 26+, use the current Go toolchain: Go 1.21's linker cannot produce all
+binaries accepted by the newer OS. Minimum-toolchain macOS CI uses macOS 15.
 
 ```sh
 git clone https://github.com/suttonwilliamd/pebble.git
@@ -82,6 +85,10 @@ pebble log
 pebble checkout main
 pebble fsck
 ```
+
+To undo edits or recover a deleted tracked file, run `pebble restore path/to/file`.
+**This explicitly discards that file's uncommitted contents.** It restores HEAD
+without changing history and refuses untracked paths, directories and symlinks.
 
 Commits include **all non-ignored files**, additions and deletions; there is no
 staging area. Unchanged commits are rejected. Status uses committed HEAD, not an

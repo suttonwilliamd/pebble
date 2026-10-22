@@ -43,11 +43,23 @@ func TestDogfoodCLI(t *testing.T) {
 		t.Fatal(s)
 	}
 	call("fsck")
+	os.WriteFile(filepath.Join(root, "hello.txt"), []byte("discard"), 0644)
+	call("restore", "hello.txt")
+	if b, _ := os.ReadFile(filepath.Join(root, "hello.txt")); string(b) != "hello" {
+		t.Fatal("CLI restore failed")
+	}
 	sub := filepath.Join(root, "sub")
 	os.Mkdir(sub, 0755)
 	out.Reset()
 	if err := run([]string{"status"}, sub, &out); err != nil {
 		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(root, "hello.txt"), []byte("discard again"), 0644)
+	if err := run([]string{"restore", "../hello.txt"}, sub, &out); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "hello.txt")); string(b) != "hello" {
+		t.Fatal("subdirectory restore failed")
 	}
 }
 func TestCLIErrors(t *testing.T) {

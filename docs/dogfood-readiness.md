@@ -27,6 +27,12 @@ no CLI/snapshot tests covering the basic user workflow.
 | Streaming chunker discarded its remaining bytes at EOF | Bounded buffering, shared batch boundaries, tail flush, invalid-config checks |
 | Error Is method failed go vet / standard error matching | Standard errors.Is support with code targets |
 
+A follow-up adds `pebble restore <file>` for explicit single-file recovery from
+HEAD, with corruption checks before overwriting and refusal of untracked paths,
+directories and symlinks. CI exposed Go 1.21's incompatibility with macOS 26's
+Mach-O loader; minimum-toolchain macOS testing is pinned to macOS 15, while the
+stable toolchain is tested on the latest macOS.
+
 Regression tests cover local workflow round trips, complete CLI history, nested
 repository discovery, ignored/previously tracked files, duplicate branches,
 corruption preflight, untracked collisions, unsafe refs/paths, writer locking,
@@ -49,7 +55,7 @@ run where OS permissions allow them.
 4. **Complete sync graph and server.** Transfer all reachable commits/trees/blobs
    or manifests/chunks, validate before publication, fast-forward/CAS ref updates,
    protocol versioning, authentication, size limits and interrupted-transfer recovery.
-5. **Daily ergonomics.** Read-only text/binary diff, selective restore, config-backed
+5. **Daily ergonomics.** Read-only text/binary diff, restore from arbitrary revisions, config-backed
    identity, safe branch deletion, ignore tooling and signed release binaries.
 6. **Merge and binary conflict UX.** Connect the existing combine library only
    after preservation tests and explicit resolution/recovery semantics are in place.
