@@ -45,7 +45,6 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     env:
-      PEBBLE_TOKEN_FILE: ${{ runner.temp }}/pebble-server-token
       PEBBLE_AUTHOR: CI Dogfood
       PEBBLE_EMAIL: ci@example.invalid
     steps:
@@ -57,9 +56,11 @@ jobs:
         run: |
           umask 077
           openssl rand -hex 32 > "$RUNNER_TEMP/pebble-client-token"
-          cp "$RUNNER_TEMP/pebble-client-token" "$PEBBLE_TOKEN_FILE"
-          sudo chown 65532:65532 "$PEBBLE_TOKEN_FILE"
-          sudo chmod 0400 "$PEBBLE_TOKEN_FILE"
+          server_token="$RUNNER_TEMP/pebble-server-token"
+          echo "PEBBLE_TOKEN_FILE=$server_token" >> "$GITHUB_ENV"
+          cp "$RUNNER_TEMP/pebble-client-token" "$server_token"
+          sudo chown 65532:65532 "$server_token"
+          sudo chmod 0400 "$server_token"
       - name: Validate and start isolated container
         run: |
           docker compose -f deploy/docker/compose.yaml config --quiet
