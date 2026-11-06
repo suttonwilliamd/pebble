@@ -72,11 +72,17 @@ typed graph, stores objects, then publishes only a new branch under the existing
 writer lock. Import leaves HEAD, existing branches, index and working files
 unchanged, even with dirty tracked files. Recovery requires a separate explicit
 checkout, retaining the normal dirty-work/untracked-collision safeguards.
+`pebble bundle inspect <file>` verifies a backup without any repository and emits
+only a JSON summary after full validation: version, original source ref, tip and
+unique commit/tree/blob/total object counts. It does not acquire a writer lock or
+write objects, refs, working files or input bytes.
 
 ```sh
 # Source: choose a new file outside the working tree.
 pebble bundle create ../project-backup.bundle
-# Transfer the file independently; in an initialized destination:
+# Verify the transferred file from any directory, even outside a repository:
+pebble bundle inspect /path/to/project-backup.bundle
+# Then, in an initialized destination:
 pebble bundle import /path/to/project-backup.bundle recovered/main
 pebble fsck
 pebble checkout recovered/main
@@ -122,6 +128,17 @@ the absent index, dirty tracked bytes and untracked binary bytes. Existing-file/
 branch overwrites, truncated/tampered bundles and dirty checkout were rejected.
 The rebuilt CLI also rejected a malformed 50,001st object before parsing it and
 rejected a trailing hostile array; invalid inputs left the repository unchanged.
+
+The read-only inspection follow-up passed the complete Go tests/vet/build on
+Windows with Go 1.27.3. Behavior regressions cover deduplicated tree/blob counts,
+full integrity rejection before any summary, JSON CLI output outside a repository,
+no metadata creation and input/source preservation. The shared FIFO/alias
+regression also covers inspection but remains unexecuted on Windows.
+A rebuilt CLI independently inspected a three-commit, three-tree, four-blob backup
+from a directory containing no repository: exact tip/counts matched, source dirty
+data and every input/sentinel digest remained unchanged. Truncated, tampered and
+excess-object inputs exited unsuccessfully with empty stdout. Inspection does not
+replace testing an explicit import/checkout or keeping independent backups.
 
 Remaining limits: bounded whole-history/in-memory JSON, not compression or
 incremental/streaming backups; no encryption/authenticity, Git interoperability,

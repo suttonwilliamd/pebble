@@ -94,39 +94,84 @@ func (r *Repository) ImportBundleFile(path, branch string) error {
 	if err := validateRef(ref); err != nil {
 		return err
 	}
+	bundle, err := readBundleFile(path)
+	if err != nil {
+		return err
+	}
+	// Changing the ref does not change content addresses or commit metadata.
+	bundle.Ref = ref
+	return r.applyBundle(bundle, "", true, true)
+}
+
+// BundleInfo describes verified history without exposing file contents.
+type BundleInfo struct {
+	Version     int    `json:"version"`
+	SourceRef   string `json:"source_ref"`
+	Tip         string `json:"tip"`
+	ObjectCount int    `json:"object_count"`
+	CommitCount int    `json:"commit_count"`
+	TreeCount   int    `json:"tree_count"`
+	BlobCount   int    `json:"blob_count"`
+}
+
+// InspectBundleFile verifies the complete bundle without opening a repository,
+// acquiring a writer lock, storing objects, or creating any files.
+func InspectBundleFile(path string) (BundleInfo, error) {
+	bundle, err := readBundleFile(path)
+	if err != nil {
+		return BundleInfo{}, err
+	}
+	if _, err = bundle.graph(); err != nil {
+		return BundleInfo{}, fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+	}
+	info := BundleInfo{
+		Version: bundle.Version, SourceRef: bundle.Ref, Tip: bundle.Hash,
+		ObjectCount: len(bundle.Objects),
+	}
+	for _, object := range bundle.Objects {
+		switch object.Type {
+		case ObjectTypeCommit:
+			info.CommitCount++
+		case ObjectTypeTree:
+			info.TreeCount++
+		case ObjectTypeBlob:
+			info.BlobCount++
+		}
+	}
+	return info, nil
+}
+
+func readBundleFile(path string) (*Bundle, error) {
 	// Stat before opening: opening a FIFO can otherwise block before f.Stat.
 	// As with repository metadata, the input directory must be trusted and must
 	// not be concurrently replaced between this check and os.Open.
 	info, err := os.Stat(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err = checkBundleFileInfo(info); err != nil {
-		return err
+		return nil, err
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
 	info, err = f.Stat()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err = checkBundleFileInfo(info); err != nil {
-		return err
+		return nil, err
 	}
 	bundle, err := decodeBundle(f)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidBundle, err)
 	}
-	// Validate the original source reference as well as the caller's target.
-	// Changing the ref does not change content addresses or commit metadata.
 	if err = validateRef(bundle.Ref); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidBundle, err)
 	}
-	bundle.Ref = ref
-	return r.applyBundle(bundle, "", true, true)
+	return bundle, nil
 }
 
 func checkBundleFileInfo(info os.FileInfo) error {

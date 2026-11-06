@@ -139,6 +139,8 @@ protect them as carefully as the original repository. They are not encrypted.
 # In the source repository (also works from a subdirectory):
 pebble fsck
 pebble bundle create ../project-backup.bundle
+# Verify a transferred copy before importing; no repository is required:
+pebble bundle inspect ../project-backup.bundle
 
 # Transfer project-backup.bundle to another machine/directory.
 # In a disposable destination directory:
@@ -152,7 +154,13 @@ pebble checkout recovered/main
 pebble log
 ```
 
-`pebble bundle help` explains the commands without requiring a repository.
+`pebble bundle help` and `pebble bundle inspect <file>` require no repository.
+Inspection verifies the same complete typed graph before printing a JSON summary:
+`version`, `source_ref`, `tip`, `object_count`, `commit_count`, `tree_count` and
+`blob_count`. Counts are unique immutable objects, not per-commit file totals.
+No file contents, objects or branches are written, no writer lock is acquired, and
+invalid input exits unsuccessfully without a partial success summary. This proves
+content integrity, not the backup's author or authenticity.
 Paths are relative to the invocation directory, not the discovered repository
 root. Create refuses existing files (including symlinks) and destinations directly
 inside this repository's `.pebble`/`.git` metadata. Import requires an initialized
@@ -173,11 +181,12 @@ preserved in trees across platforms; executable checkout applies on Unix only.
 This does not add symlink, ACL or arbitrary filesystem-metadata support.
 
 Create verifies every reachable object before exclusively creating and syncing
-the file. Import bounds the input and enforces the object count while decoding
-array entries, before allocating an excess object. It rejects unsupported
-versions, unknown fields, duplicate top-level fields, extra documents, invalid
-paths/refs/types, duplicate/unreachable objects, missing dependencies and hash/size
-corruption **before storing any objects**. Only regular files are accepted:
+the file. Import and inspection share bounded input decoding and enforce the
+object count before allocating an excess entry. Both reject unsupported versions,
+unknown fields, duplicate top-level fields, extra documents, invalid paths/refs/types,
+duplicate/unreachable objects, missing dependencies and hash/size corruption.
+Import validates **before storing any objects**; inspection never stores anything.
+Only regular files are accepted:
 pre-open checks follow aliases to reject FIFOs/devices without blocking, and the
 opened descriptor is checked again. The input directory must be trusted and not
 concurrently replaced between these checks and opening; this is not protection

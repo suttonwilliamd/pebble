@@ -497,6 +497,9 @@ func TestBundleFileRejectsFIFO(t *testing.T) {
 		t.Skip("Unix FIFO creation is unavailable on Windows")
 	}
 	if path := os.Getenv("PEBBLE_TEST_FIFO_CHILD"); path != "" {
+		if info, err := InspectBundleFile(path); !errors.Is(err, ErrInvalidBundle) || info != (BundleInfo{}) {
+			t.Fatalf("inspection did not reject FIFO without a summary: %+v, %v", info, err)
+		}
 		r := newTestRepo(t)
 		before := repositoryFiles(t, r)
 		err := r.ImportBundleFile(path, "fifo")
@@ -532,6 +535,72 @@ func TestBundleFileRejectsFIFO(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("FIFO rejection subprocess: %v: %s", err, output)
+			}
+		})
+	}
+}
+
+func TestInspectBundleSummarizesVerifiedUniqueHistoryWithoutWrites(t *testing.T) {
+	source := newTestRepo(t)
+	put(t, source, "asset.bin", "\x00\xfffirst")
+	commitTest(t, source, "first")
+	put(t, source, "asset.bin", "\x00\xfesecond")
+	commitTest(t, source, "second")
+	put(t, source, "asset.bin", "\x00\xfffirst")
+	tip := commitTest(t, source, "reuse the first tree and blob")
+	path := filepath.Join(t.TempDir(), "history.bundle")
+	if err := source.CreateBundleFile(path); err != nil {
+		t.Fatal(err)
+	}
+	before := repositoryFiles(t, source)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := InspectBundleFile(path)
+	want := BundleInfo{
+		Version: 1, SourceRef: "heads/main", Tip: tip,
+		ObjectCount: 7, CommitCount: 3, TreeCount: 2, BlobCount: 2,
+	}
+	if err != nil || got != want {
+		t.Fatalf("summary: %+v, %v; want %+v", got, err, want)
+	}
+	if !reflect.DeepEqual(before, repositoryFiles(t, source)) {
+		t.Fatal("inspection changed source repository")
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, original) {
+		t.Fatalf("inspection changed input: %v", err)
+	}
+}
+
+func TestInspectBundleNeverReportsUnverifiedHistory(t *testing.T) {
+	source := newTestRepo(t)
+	put(t, source, "asset.bin", "\x00\xffcontent")
+	commitTest(t, source, "source")
+	base, err := source.Export("heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*Bundle){
+		"tampered content":   func(b *Bundle) { b.Objects[0].Content = []byte("tampered") },
+		"missing dependency": func(b *Bundle) { b.Objects = b.Objects[1:] },
+		"duplicate object":   func(b *Bundle) { b.Objects = append(b.Objects, b.Objects[0]) },
+		"unreachable object": func(b *Bundle) { b.Objects = append(b.Objects, NewObject(ObjectTypeBlob, []byte("unused"))) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bundle := copyBundle(t, base)
+			mutate(bundle)
+			data, err := json.Marshal(bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := bundleTestFile(t, data)
+			got, err := InspectBundleFile(path)
+			if !errors.Is(err, ErrInvalidBundle) || got != (BundleInfo{}) {
+				t.Fatalf("reported invalid history: %+v, %v", got, err)
+			}
+			if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, data) {
+				t.Fatalf("invalid inspection changed input: %v", err)
 			}
 		})
 	}

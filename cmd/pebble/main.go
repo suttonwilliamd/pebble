@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -35,6 +36,7 @@ Usage:
   pebble checkout <branch>        Restore a branch (refuses tracked changes)
   pebble restore <file>           Discard edits to one file, restoring HEAD
   pebble bundle create <file>      Back up complete HEAD history to a NEW file
+  pebble bundle inspect <file>     Verify backup and print JSON history summary
   pebble bundle import <file> <new-branch>
                                   Verify backup into a NEW branch; files unchanged
   pebble push <url> [branch]       Push HEAD to a remote branch (default: current)
@@ -64,7 +66,7 @@ func run(args []string, cwd string, w io.Writer) error {
 	default:
 		return fmt.Errorf("unknown command %q; run pebble help", cmd)
 	}
-	if cmd == "bundle" && len(params) == 1 && (params[0] == "help" || params[0] == "--help" || params[0] == "-h") {
+	if cmd == "bundle" && len(params) > 0 && (params[0] == "inspect" || params[0] == "help" || params[0] == "--help" || params[0] == "-h") {
 		return handleBundle(params, cwd, nil, w)
 	}
 	if cmd == "init" {
@@ -285,16 +287,25 @@ func handleSync(cmd string, params []string, repo *snapshot.Repository, w io.Wri
 
 func handleBundle(params []string, cwd string, repo *snapshot.Repository, w io.Writer) error {
 	if len(params) == 1 && (params[0] == "help" || params[0] == "--help" || params[0] == "-h") {
-		fmt.Fprintln(w, "Usage: pebble bundle create <file>\n       pebble bundle import <file> <new-branch>\nComplete HEAD history only; 32 MiB JSON / 50,000 objects. No overwrites.\nImport requires an initialized repository; HEAD and working files are unchanged.")
+		fmt.Fprintln(w, "Usage: pebble bundle create <file>\n       pebble bundle inspect <file>\n       pebble bundle import <file> <new-branch>\nComplete HEAD history only; 32 MiB JSON / 50,000 objects. No overwrites.\nInspect requires no repository and writes only a verified JSON summary to stdout.\nImport requires an initialized repository; HEAD and working files are unchanged.")
 		return nil
 	}
-	if len(params) < 2 || (params[0] != "create" && params[0] != "import") ||
-		(params[0] == "create" && len(params) != 2) || (params[0] == "import" && len(params) != 3) {
-		return errors.New("usage: pebble bundle create <file> | pebble bundle import <file> <new-branch>")
+	if len(params) < 2 || (params[0] != "create" && params[0] != "import" && params[0] != "inspect") ||
+		(params[0] == "import" && len(params) != 3) || (params[0] != "import" && len(params) != 2) {
+		return errors.New("usage: pebble bundle create <file> | pebble bundle inspect <file> | pebble bundle import <file> <new-branch>")
 	}
 	path := params[1]
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(cwd, path)
+	}
+	if params[0] == "inspect" {
+		info, err := snapshot.InspectBundleFile(path)
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(w)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(info)
 	}
 	if params[0] == "create" {
 		if err := repo.CreateBundleFile(path); err != nil {

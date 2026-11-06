@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/suttonwilliamd/pebble/internal/snapshot"
 )
 
 func TestBundleCLITransferAndPreservation(t *testing.T) {
@@ -141,5 +144,68 @@ func TestBundleCLIHelpAndErrors(t *testing.T) {
 	}
 	if err := run([]string{"bundle", "import", "missing.bundle", "recovered"}, root, &out); err == nil {
 		t.Fatal("missing file accepted")
+	}
+}
+
+func TestBundleInspectOutsideRepository(t *testing.T) {
+	source, outside := t.TempDir(), t.TempDir()
+	repo, err := snapshot.Init(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(source, "asset.bin")
+	if err = os.WriteFile(path, []byte{0, 255, 1}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.Commit("first", "First Author", "first@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, []byte{0, 254, 2}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	tip, err := repo.Commit("second", "Second Author", "second@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path = filepath.Join(outside, "history.bundle")
+	if err = repo.CreateBundleFile(path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err = run([]string{"bundle", "inspect", "history.bundle"}, outside, &out); err != nil {
+		t.Fatal(err)
+	}
+	var info snapshot.BundleInfo
+	if err = json.Unmarshal(out.Bytes(), &info); err != nil {
+		t.Fatalf("summary is not JSON: %v", err)
+	}
+	want := snapshot.BundleInfo{Version: 1, SourceRef: "heads/main", Tip: tip,
+		ObjectCount: 6, CommitCount: 2, TreeCount: 2, BlobCount: 2}
+	if info != want {
+		t.Fatalf("summary: %+v; want %+v", info, want)
+	}
+	for _, args := range [][]string{
+		{"bundle", "inspect"}, {"bundle", "inspect", "history.bundle", "extra"},
+		{"bundle", "inspect", "missing.bundle"},
+	} {
+		out.Reset()
+		if err = run(args, outside, &out); err == nil || out.Len() != 0 {
+			t.Fatalf("%v reported unverified summary: %q, %v", args, out.String(), err)
+		}
+	}
+	if err = os.WriteFile(path, data[:len(data)-1], 0600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err = run([]string{"bundle", "inspect", "history.bundle"}, outside, &out); err == nil || out.Len() != 0 {
+		t.Fatalf("truncated input reported success: %q, %v", out.String(), err)
+	}
+	files, err := os.ReadDir(outside)
+	if err != nil || len(files) != 1 || files[0].Name() != "history.bundle" {
+		t.Fatalf("inspection created files/metadata: %v, %v", files, err)
 	}
 }
