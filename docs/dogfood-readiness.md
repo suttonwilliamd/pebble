@@ -140,6 +140,38 @@ data and every input/sentinel digest remained unchanged. Truncated, tampered and
 excess-object inputs exited unsuccessfully with empty stdout. Inspection does not
 replace testing an explicit import/checkout or keeping independent backups.
 
+### Cross-platform working-tree qualification
+
+A real Linux-to-Windows transfer exposed a portability defect: an unchanged Unix
+executable appeared modified, blocked checkout and could lose its executable
+metadata in a later Windows commit. Windows now retains HEAD's committed modes
+for tracked files rather than substituting unobservable physical executable bits.
+This also covers tracked files subsequently ignored. Identical untracked files
+are adopted without rewriting on Windows even when their target mode is executable;
+Unix still requires matching executable permissions and tracks actual `chmod`.
+
+The correction passed the complete Windows Go test suite, `go vet ./...` and a
+rebuilt CLI. A regression failed against the old implementation, then passed with
+clean status/no-op ref preservation, no-rewrite adoption and unchanged executable
+metadata through unrelated, ignore-rule and content commits.
+
+Existing Ubuntu 24.04 under WSL2 ran the cross-compiled Linux snapshot suite:
+31 top-level tests passed, including actual FIFO/alias refusal, symlink rejection
+and executable-bit transitions; only the Windows-specific regression was skipped.
+No Linux Go installation, package installation or system configuration was needed.
+
+The actual Linux-to-Windows-to-Linux CLI flow preserved two original Linux commits
+and three subsequent Windows commits: 17 exact typed objects, five commits, five
+trees and seven blobs. Windows status was clean; a no-op preserved every repository
+file digest; identical untracked-script adoption retained its exact modification
+time. Unrelated edits, new ignore rules and an edited ignored script retained the
+committed executable mode. Back on Linux, dirty import state remained intact,
+dirty checkout was refused without writes, every expected file matched, and the
+restored `0755` script actually printed `windows-edited`. Real `chmod 0644` and
+`chmod 0755` on that ignored tracked script were detected and committed without
+changing its blob. Final status and `fsck` passed. These are Windows/WSL2 amd64
+results, not qualification of other filesystems or hardware.
+
 Remaining limits: bounded whole-history/in-memory JSON, not compression or
 incremental/streaming backups; no encryption/authenticity, Git interoperability,
 chunk format, merge, server changes or automatic recovery. Synced exclusive

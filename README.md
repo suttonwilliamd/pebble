@@ -101,10 +101,16 @@ without changing history and refuses untracked paths, directories and symlinks.
 Commits include **all non-ignored files**, additions and deletions; there is no
 staging area. Unchanged commits are rejected. Status uses committed HEAD, not an
 index cache. Untracked files may survive checkout unless they collide with a
-target file, in which case checkout refuses unless contents and executable mode
-are identical (then the existing file is adopted without rewriting).
+target file, in which case checkout refuses unless contents and, on Unix,
+executable mode are identical (then the existing file is adopted without rewriting).
 File/directory transitions are currently rejected; empty directories left by
 checkout are harmless.
+
+Windows cannot observe Unix executable bits. Tracked files retain their committed
+mode metadata through status checks and later content commits, including files
+subsequently covered by ignore rules. Imported executable files do not appear
+modified merely because of the host platform. New Windows files are non-executable;
+change executable permissions on Unix, where real mode changes remain tracked.
 
 ### Ignore rules
 
@@ -177,8 +183,9 @@ exported: no other branch tips, index, ignored/untracked files or uncommitted ed
 An unborn branch has no history to back up and is refused; a committed empty tree
 is valid. All commit bytes, authors/emails, timestamps, messages, parent links,
 tree modes and binary blobs retain their original addresses. Executable modes are
-preserved in trees across platforms; executable checkout applies on Unix only.
-This does not add symlink, ACL or arbitrary filesystem-metadata support.
+preserved across Windows checkouts and subsequent commits; executable checkout
+and mode changes apply on Unix only. This does not add symlink, ACL or arbitrary
+filesystem-metadata support.
 
 Create verifies every reachable object before exclusively creating and syncing
 the file. Import and inspection share bounded input decoding and enforce the

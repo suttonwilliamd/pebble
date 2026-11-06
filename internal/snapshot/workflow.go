@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -126,12 +127,16 @@ func (r *Repository) workingIndex() (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	for _, e := range idx.Entries {
-		seen[e.Path] = true
+	// Windows cannot report Unix executable bits; keep committed modes authoritative.
+	seen := make(map[string]int, len(idx.Entries))
+	for i, e := range idx.Entries {
+		seen[e.Path] = i
 	}
 	for _, e := range old {
-		if seen[e.Name] {
+		if i, ok := seen[e.Name]; ok {
+			if runtime.GOOS == "windows" {
+				idx.Entries[i].Mode = e.Mode
+			}
 			continue
 		}
 		p, err := r.safePath(e.Name)
@@ -152,7 +157,11 @@ func (r *Repository) workingIndex() (*Index, error) {
 		if err != nil {
 			return nil, err
 		}
-		idx.Entries = append(idx.Entries, IndexEntry{Path: e.Name, Mode: info.Mode().String(), Size: obj.Size, Mtime: info.ModTime(), Hash: obj.Hash})
+		mode := e.Mode
+		if runtime.GOOS != "windows" {
+			mode = info.Mode().String()
+		}
+		idx.Entries = append(idx.Entries, IndexEntry{Path: e.Name, Mode: mode, Size: obj.Size, Mtime: info.ModTime(), Hash: obj.Hash})
 	}
 	sort.Slice(idx.Entries, func(i, j int) bool { return idx.Entries[i].Path < idx.Entries[j].Path })
 	return idx, nil
@@ -347,7 +356,8 @@ func (r *Repository) Checkout(name string) error {
 				if err != nil {
 					return err
 				}
-				if existing.Hash != e.Hash || executable(info.Mode().String()) != executable(e.Mode) {
+				if existing.Hash != e.Hash ||
+					(runtime.GOOS != "windows" && executable(info.Mode().String()) != executable(e.Mode)) {
 					return fmt.Errorf("checkout would overwrite untracked file: %s", e.Name)
 				}
 				adopt[e.Name] = true

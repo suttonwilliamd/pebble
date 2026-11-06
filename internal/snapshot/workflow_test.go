@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestRepo(t *testing.T) *Repository {
@@ -266,5 +268,134 @@ func TestSymlinkRefused(t *testing.T) {
 	}
 	if _, err := r.safePath("link/precious"); err == nil {
 		t.Fatal("symlink ancestor followed")
+	}
+}
+
+func TestWindowsPortableModeWorkflow(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows cannot observe Unix executable bits")
+	}
+	r := newTestRepo(t)
+	const original = "#!/bin/sh\nexit 0\n"
+	put(t, r, "run.sh", original)
+	base := commitTest(t, r, "base")
+	entries, err := r.treeForCommit(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range entries {
+		if entries[i].Name == "run.sh" {
+			entries[i].Mode = "-rwxr-xr-x"
+		}
+	}
+	tree := CreateTree(entries)
+	portable := CreateCommit(tree.Hash, base, "Unix", "unix@example.test", "executable")
+	for _, obj := range []*Object{tree, portable} {
+		if err := r.StoreObject(obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.SetRef("heads/unix", portable.Hash); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Checkout("unix"); err != nil {
+		t.Fatal(err)
+	}
+	if changes, err := r.Status(); err != nil || len(changes) != 0 {
+		t.Fatalf("unchanged portable checkout is dirty: %v %v", changes, err)
+	}
+	if _, err := r.Commit("no changes", "Test", "test@example.test"); err == nil {
+		t.Fatal("unobservable mode produced a commit")
+	}
+	if tip, err := r.GetRef("heads/unix"); err != nil || tip != portable.Hash {
+		t.Fatalf("no-op changed the branch: %s %v", tip, err)
+	}
+	if err := r.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(r.RootPath(), "run.sh")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	commitTest(t, r, "remove script on main")
+	put(t, r, "run.sh", original)
+	stamp := time.Unix(1000000, 0)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Checkout("unix"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil || !after.ModTime().Equal(before.ModTime()) || content(t, r, "run.sh") != original {
+		t.Fatalf("identical untracked script was rewritten: %v", err)
+	}
+	expected := original
+	for _, edit := range []struct{ name, value string }{
+		{"note.txt", "unrelated content\n"},
+		{".pebbleignore", "run.sh\n"},
+		{"run.sh", "#!/bin/sh\nprintf changed\n"},
+	} {
+		put(t, r, edit.name, edit.value)
+		if edit.name == "run.sh" {
+			expected = edit.value
+		}
+		head := commitTest(t, r, "edit "+edit.name)
+		current, err := r.treeForCommit(head)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var script TreeEntry
+		for _, entry := range current {
+			if entry.Name == "run.sh" {
+				script = entry
+			}
+		}
+		if script.Mode != "-rwxr-xr-x" || script.Hash != ComputeHash([]byte(expected)) {
+			t.Fatalf("commit lost portable mode or bytes: %+v", script)
+		}
+		if changes, err := r.Status(); err != nil || len(changes) != 0 {
+			t.Fatalf("committed portable checkout is dirty: %v %v", changes, err)
+		}
+	}
+}
+
+func TestPOSIXExecutableChangesRemainTracked(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable-bit changes")
+	}
+	r := newTestRepo(t)
+	const original = "#!/bin/sh\nexit 0\n"
+	put(t, r, "run.sh", original)
+	commitTest(t, r, "base")
+	for _, mode := range []os.FileMode{0755, 0644} {
+		if err := os.Chmod(filepath.Join(r.RootPath(), "run.sh"), mode); err != nil {
+			t.Fatal(err)
+		}
+		changes, err := r.Status()
+		if err != nil || len(changes) != 1 || changes[0] != (Change{"M", "run.sh"}) {
+			t.Fatalf("mode %o was not a tracked change: %v %v", mode, changes, err)
+		}
+		head := commitTest(t, r, "executable mode changed")
+		entries, err := r.treeForCommit(head)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, entry := range entries {
+			if entry.Name == "run.sh" {
+				found = true
+				if executable(entry.Mode) != (mode&0111 != 0) || entry.Hash != ComputeHash([]byte(original)) {
+					t.Fatalf("mode-only commit changed the wrong state: %+v", entry)
+				}
+			}
+		}
+		if !found || content(t, r, "run.sh") != original {
+			t.Fatal("mode-only commit lost the script")
+		}
 	}
 }
