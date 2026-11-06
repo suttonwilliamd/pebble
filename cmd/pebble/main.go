@@ -34,6 +34,9 @@ Usage:
   pebble branch [name]            List branches or create one at HEAD
   pebble checkout <branch>        Restore a branch (refuses tracked changes)
   pebble restore <file>           Discard edits to one file, restoring HEAD
+  pebble bundle create <file>      Back up complete HEAD history to a NEW file
+  pebble bundle import <file> <new-branch>
+                                  Verify backup into a NEW branch; files unchanged
   pebble push <url> [branch]       Push HEAD to a remote branch (default: current)
   pebble fetch <url> [branch]      Fetch into incoming/<branch> (default: main)
   pebble fsck                     Verify all reachable objects
@@ -41,7 +44,8 @@ Usage:
 
 Identity: set PEBBLE_AUTHOR and PEBBLE_EMAIL before committing.
 Remotes: PEBBLE_TOKEN_FILE; HTTPS or loopback/SSH tunnel. 32 MiB limit.
-Fetch never changes working files. Pull/merge are not ready; keep Git and backups.`)
+Fetch and bundle import never change working files. Bundles: 32 MiB / 50,000 objects.
+Pull/merge and Git import/export are not ready; keep Git and independent backups.`)
 }
 func run(args []string, cwd string, w io.Writer) error {
 	if len(args) == 0 {
@@ -56,9 +60,12 @@ func run(args []string, cwd string, w io.Writer) error {
 		return errors.New("pull/merge is not implemented: use pebble fetch <url> [branch], inspect history, then checkout incoming/<branch>; keep Git and backups")
 	}
 	switch cmd {
-	case "init", "status", "log", "branch", "checkout", "commit", "restore", "push", "fetch", "fsck":
+	case "init", "status", "log", "branch", "checkout", "commit", "restore", "push", "fetch", "fsck", "bundle":
 	default:
 		return fmt.Errorf("unknown command %q; run pebble help", cmd)
+	}
+	if cmd == "bundle" && len(params) == 1 && (params[0] == "help" || params[0] == "--help" || params[0] == "-h") {
+		return handleBundle(params, cwd, nil, w)
 	}
 	if cmd == "init" {
 		if len(params) != 0 {
@@ -203,6 +210,8 @@ func run(args []string, cwd string, w io.Writer) error {
 			return err
 		}
 		fmt.Fprintln(w, "Restored from HEAD:", filepath.ToSlash(rel))
+	case "bundle":
+		return handleBundle(params, cwd, repo, w)
 	case "push", "fetch":
 		return handleSync(cmd, params, repo, w)
 	case "fsck":
@@ -271,5 +280,32 @@ func handleSync(cmd string, params []string, repo *snapshot.Repository, w io.Wri
 		return err
 	}
 	fmt.Fprintf(w, "Fetched %s into incoming/%s; working files unchanged\nInspect with: pebble checkout incoming/%s\n", branch, branch, branch)
+	return nil
+}
+
+func handleBundle(params []string, cwd string, repo *snapshot.Repository, w io.Writer) error {
+	if len(params) == 1 && (params[0] == "help" || params[0] == "--help" || params[0] == "-h") {
+		fmt.Fprintln(w, "Usage: pebble bundle create <file>\n       pebble bundle import <file> <new-branch>\nComplete HEAD history only; 32 MiB JSON / 50,000 objects. No overwrites.\nImport requires an initialized repository; HEAD and working files are unchanged.")
+		return nil
+	}
+	if len(params) < 2 || (params[0] != "create" && params[0] != "import") ||
+		(params[0] == "create" && len(params) != 2) || (params[0] == "import" && len(params) != 3) {
+		return errors.New("usage: pebble bundle create <file> | pebble bundle import <file> <new-branch>")
+	}
+	path := params[1]
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	if params[0] == "create" {
+		if err := repo.CreateBundleFile(path); err != nil {
+			return err
+		}
+		fmt.Fprintln(w, "Created verified HEAD history bundle:", params[1])
+		return nil
+	}
+	if err := repo.ImportBundleFile(path, params[2]); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "Imported verified history into new branch %s; HEAD and working files unchanged\n", params[2])
 	return nil
 }

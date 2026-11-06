@@ -15,6 +15,8 @@ and independent backups while dogfooding.
   paths and corrupt target objects before changing files.
 - Explicit single-file recovery from HEAD with `pebble restore <file>`.
 - Object integrity verification with `pebble fsck`.
+- Portable verified local backups: `bundle create` exports complete HEAD history;
+  `bundle import` restores it into a new branch without changing HEAD or files.
 - Repository discovery from subdirectories; explicit initialization; writer locks
   and atomic individual metadata/object writes.
 - Experimental `pebbled` server/website, authenticated push/fetch, complete typed
@@ -126,6 +128,75 @@ Review `pebble status` for secrets before committing; `.gitignore` is not read.
 - Legacy snapshots containing Windows backslash paths are not portable to the
   new guarded checkout. Keep the original working copy and Git backup; there is
   no automatic migration yet.
+
+### Portable local backup and restore
+
+Use a **new filename outside the working tree**, then copy the resulting file to
+independent storage. Bundles contain committed file contents and author metadata;
+protect them as carefully as the original repository. They are not encrypted.
+
+```sh
+# In the source repository (also works from a subdirectory):
+pebble fsck
+pebble bundle create ../project-backup.bundle
+
+# Transfer project-backup.bundle to another machine/directory.
+# In a disposable destination directory:
+pebble init
+pebble bundle import /path/to/project-backup.bundle recovered/main
+pebble branch
+pebble fsck
+# Import leaves HEAD, existing branches and working files unchanged.
+# Inspect/recover explicitly; normal dirty-file/collision checkout guards apply:
+pebble checkout recovered/main
+pebble log
+```
+
+`pebble bundle help` explains the commands without requiring a repository.
+Paths are relative to the invocation directory, not the discovered repository
+root. Create refuses existing files (including symlinks) and destinations directly
+inside this repository's `.pebble`/`.git` metadata. Import requires an initialized
+repository and a **new branch**, including when an existing branch has no commits;
+it never updates or switches the current branch. Nested names such as
+`recovered/main` are supported, with existing portable ref/case-collision checks.
+
+**Version 1 format and limits:** a single UTF-8 JSON document using Pebble's
+existing typed transfer bundle (`version`, source `ref`, tip `hash`, `objects`).
+Object content is base64-encoded; the **entire encoded file, including whitespace,
+must be at most 32 MiB (33,554,432 bytes)** and contain at most **50,000 objects**.
+Only the current HEAD's complete reachable commit/parent/tree/blob graph is
+exported: no other branch tips, index, ignored/untracked files or uncommitted edits.
+An unborn branch has no history to back up and is refused; a committed empty tree
+is valid. All commit bytes, authors/emails, timestamps, messages, parent links,
+tree modes and binary blobs retain their original addresses. Executable modes are
+preserved in trees across platforms; executable checkout applies on Unix only.
+This does not add symlink, ACL or arbitrary filesystem-metadata support.
+
+Create verifies every reachable object before exclusively creating and syncing
+the file. Import bounds the input and enforces the object count while decoding
+array entries, before allocating an excess object. It rejects unsupported
+versions, unknown fields, duplicate top-level fields, extra documents, invalid
+paths/refs/types, duplicate/unreachable objects, missing dependencies and hash/size
+corruption **before storing any objects**. Only regular files are accepted:
+pre-open checks follow aliases to reject FIFOs/devices without blocking, and the
+opened descriptor is checked again. The input directory must be trusted and not
+concurrently replaced between these checks and opening; this is not protection
+against an attacker racing filesystem replacements.
+Hashes provide integrity, not proof of a backup's author or authenticity. The
+format remains whole-history/in-memory, without compression, streaming large-file
+storage, incremental bundles or resumable transfers.
+
+The writer lock protects the source HEAD and destination ref publication.
+Import stores validated immutable objects before atomically publishing the new
+ref; a later I/O failure may leave unreachable objects but never switches HEAD or
+edits working files. Output files use exclusive creation, file sync and checked
+close, not a crash-atomic publication transaction: abrupt termination can leave a
+partial bundle, and directory-entry durability is filesystem-dependent. Keep an
+earlier independent backup until a transferred copy imports and passes `fsck`;
+truncated bundles are rejected, not automatically repaired.
+
+This is a local escape hatch, **not Git import/export (issue #3)**. GitHub's Git
+endpoints still cannot consume Pebble bundles.
 
 ## Remote test service
 

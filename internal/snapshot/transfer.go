@@ -98,6 +98,10 @@ func walkGraph(root string, get func(string) (*Object, error)) (map[string]*Obje
 }
 
 func (r *Repository) Export(ref string) (*Bundle, error) {
+	return r.export(ref, r.GetObject)
+}
+
+func (r *Repository) export(ref string, get func(string) (*Object, error)) (*Bundle, error) {
 	if err := validateRef(ref); err != nil {
 		return nil, err
 	}
@@ -108,7 +112,7 @@ func (r *Repository) Export(ref string) (*Bundle, error) {
 	if hash == "" {
 		return nil, fmt.Errorf("branch has no commits: %s", ref)
 	}
-	graph, err := walkGraph(hash, r.GetObject)
+	graph, err := walkGraph(hash, get)
 	if err != nil {
 		return nil, err
 	}
@@ -167,16 +171,16 @@ func (b *Bundle) graph() (map[string]*Object, error) {
 // single fast-forward ref update with an expected-old-hash compare under the writer lock.
 // It never changes HEAD or working files.
 func (r *Repository) ApplyBundle(b *Bundle, expected string) error {
-	return r.applyBundle(b, expected, false)
+	return r.applyBundle(b, expected, false, false)
 }
 
 // ImportBundle additionally refuses to move the checked-out branch, checking
 // HEAD under the same writer lock as the ref update (including concurrent checkout).
 func (r *Repository) ImportBundle(b *Bundle, expected string) error {
-	return r.applyBundle(b, expected, true)
+	return r.applyBundle(b, expected, true, false)
 }
 
-func (r *Repository) applyBundle(b *Bundle, expected string, protectWorktree bool) error {
+func (r *Repository) applyBundle(b *Bundle, expected string, protectWorktree, requireNew bool) error {
 	graph, err := b.graph()
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
@@ -199,6 +203,9 @@ func (r *Repository) applyBundle(b *Bundle, expected string, protectWorktree boo
 		}
 	}
 	current, err := r.GetRef(b.Ref)
+	if requireNew && err == nil {
+		return fmt.Errorf("branch already exists: %s", b.Ref)
+	}
 	if os.IsNotExist(err) {
 		current = ""
 	} else if err != nil {

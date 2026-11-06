@@ -64,6 +64,74 @@ corruption preflight, untracked collisions, unsafe refs/paths, writer locking,
 object tampering and streaming reconstruction/boundary equivalence. Symlink tests
 run where OS permissions allow them.
 
+## Local portable backup checkpoint
+
+`pebble bundle create <file>` now backs up the complete committed history reachable
+from current HEAD. `pebble bundle import <file> <new-branch>` validates the entire
+typed graph, stores objects, then publishes only a new branch under the existing
+writer lock. Import leaves HEAD, existing branches, index and working files
+unchanged, even with dirty tracked files. Recovery requires a separate explicit
+checkout, retaining the normal dirty-work/untracked-collision safeguards.
+
+```sh
+# Source: choose a new file outside the working tree.
+pebble bundle create ../project-backup.bundle
+# Transfer the file independently; in an initialized destination:
+pebble bundle import /path/to/project-backup.bundle recovered/main
+pebble fsck
+pebble checkout recovered/main
+pebble log
+```
+
+The version-1 file is the existing complete-history JSON transfer bundle, with
+base64 object contents. Limits are **32 MiB (33,554,432 bytes) for the entire file**
+and **50,000 objects**. Neither command overwrites its target: create exclusively
+creates a new file; import refuses existing empty or populated branches and ref
+case/file-directory collisions. Unborn history is refused without creating a
+file, while committed empty snapshots are valid. Other branch tips and working
+edits are not backed up. Authors, emails, timestamps, messages, parents, tree
+modes and binary bytes remain content-address-identical; Unix executable bits
+survive roundtrip, while Windows retains the mode in metadata only.
+
+Final checks on Windows with Go 1.27.3 passed after independent review:
+`go test ./... -count=1` (eight tested packages; `cmd/pebbled` has no tests),
+`go vet ./...`, and `go build ./...`. Targeted bundle tests also passed.
+New behavior tests cover full binary history roundtrip and older-snapshot
+checkout, metadata/modes, preserved dirty work/HEAD/refs, locks, no overwrites,
+malformed/tampered/truncated/incomplete graphs, version/object-count limits and
+the exact encoded 32 MiB boundary.
+
+Independent review identified allocation amplification from decoding an entire
+object array before checking its count, and a Unix FIFO that could block on open
+before its type was checked. Import now decodes entries individually and stops
+before object 50,001; guard-reader regressions prove early abort without reading
+the hostile excess value or expanding trailing arrays. It checks regular-file
+type before open (following aliases) and again on the descriptor. Input directories
+must remain trusted and must not be concurrently replaced between those checks.
+A five-second child-process FIFO/alias regression is included for supported Unix
+hosts; it was explicitly skipped on this Windows validation host, not claimed as
+executed Unix proof.
+
+An actual compiled CLI smoke used independent disposable source/destination
+repositories, three commits/two authors and two versions of a 1 MiB binary.
+The post-review 2,800,840-byte backup was copied, imported and explicitly checked out;
+complete log and typed object contents matched, and both old/new binary SHA-256
+hashes matched. Source `fsck` verified 12 objects; destination `fsck` verified 15
+(including its independent local history). Import preserved HEAD/current ref,
+the absent index, dirty tracked bytes and untracked binary bytes. Existing-file/
+branch overwrites, truncated/tampered bundles and dirty checkout were rejected.
+The rebuilt CLI also rejected a malformed 50,001st object before parsing it and
+rejected a trailing hostile array; invalid inputs left the repository unchanged.
+
+Remaining limits: bounded whole-history/in-memory JSON, not compression or
+incremental/streaming backups; no encryption/authenticity, Git interoperability,
+chunk format, merge, server changes or automatic recovery. Synced exclusive
+output is not crash-atomic publication: an interrupted create may leave a partial
+file that import rejects, and directory durability depends on the filesystem.
+An I/O failure while importing validated objects can leave unreachable objects;
+the branch is published only after all object writes succeed. Keep independent
+backups until a transferred bundle imports and passes `fsck`.
+
 ## Next implementation priorities
 
 1. **Recoverable checkout transactions.** Durable journal, startup recovery and
@@ -74,9 +142,9 @@ run where OS permissions allow them.
    chunks, streaming reads/writes, hash/type domain separation and a migration plan.
    Measure binary edits, insertion-heavy workloads, peak RSS and storage amplification.
    Do not market binary efficiency before benchmarking the actual CLI path.
-3. **Local backup/restore and Git interoperability.** Portable verified bundle
-   export/import, then Git import/export preserving authors, parents and modes.
-   This is the shortest route to practical escape hatches and GitHub-backed use.
+3. **Git interoperability after local backup/restore.** Portable verified local
+   bundle export/import is implemented above. Git import/export preserving authors,
+   parents and modes remains open (issue #3); this checkpoint does not implement it.
 4. **Complete sync graph and server.** Transfer all reachable commits/trees/blobs
    or manifests/chunks, validate before publication, fast-forward/CAS ref updates,
    protocol versioning, authentication, size limits and interrupted-transfer recovery.
@@ -88,8 +156,9 @@ run where OS permissions allow them.
 ## Known constraints
 
 Whole-file JSON/base64 storage and hashing still consume memory proportional to
-file size. No staging, merge CLI, remotes, GC, automatic migration or durable
-checkout journal. No symlinks, special files, empty directory snapshots or full
+file size. No staging, merge CLI, GC, automatic migration or durable checkout
+journal. Remote sync and local bundles remain bounded whole-history transfers.
+No symlinks, special files, empty directory snapshots or full
 permission/ACL preservation. Local metadata must be trusted. Do not run editors
 or external filesystem mutations concurrently with a snapshot/checkout.
 
