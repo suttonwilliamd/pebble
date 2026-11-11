@@ -145,12 +145,12 @@ func parsePayload(kind Kind, payload []byte) (*node, error) {
 	d := decoder{b: payload}
 	switch kind {
 	case ManifestPage, Manifest:
-		max, childKind := uint32(1024), Chunk
+		max, childKind := uint32(manifestPageEntries), Chunk
 		if kind == Manifest {
 			n.total = d.u64()
 			d.require(n.total <= maxLength, "length")
 			copy(n.checksum[:], d.take(32))
-			max, childKind = 16384, ManifestPage
+			max, childKind = maxManifestPages, ManifestPage
 		}
 		count := d.count(max)
 		d.require(kind != ManifestPage || count > 0, "length")

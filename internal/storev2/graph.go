@@ -1,9 +1,6 @@
 package storev2
 
-import (
-	"context"
-	"crypto/sha256"
-)
+import "context"
 
 // Local verification policy, not new wire limits. Fail closed rather than walk
 // an unbounded graph or retain unbounded metadata from an untrusted transfer.
@@ -106,28 +103,7 @@ func (g *graph) semantic(id ID, n *node) error {
 			}
 		}
 	case Manifest:
-		h := sha256.New()
-		for i, e := range n.edges {
-			page := g.nodes[e.id]
-			if page.total != e.length {
-				return corrupt(id, invalid("length"))
-			}
-			if i != len(n.edges)-1 && len(page.edges) != 1024 {
-				return corrupt(id, invalid("partition"))
-			}
-			for _, chunk := range page.edges {
-				// Revalidate bytes actually fed to the whole-file checksum. This
-				// also catches content changed since initial dependency inspection.
-				if _, err := g.store.load(g.ctx, chunk.id, nil, h, g.buffer, &g.readBudget); err != nil {
-					return err
-				}
-			}
-		}
-		var sum [32]byte
-		h.Sum(sum[:0])
-		if sum != n.checksum {
-			return corrupt(id, invalid("checksum"))
-		}
+		return g.store.copyManifest(g.ctx, id, n, nil, g.buffer, &g.readBudget, g.nodes)
 	}
 	return nil
 }
