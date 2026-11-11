@@ -163,6 +163,9 @@ go vet ./...
 go test ./internal/rock -run '^$' -fuzz FuzzStreamRoundTrip -fuzztime 20s
 ```
 
+See [disposable fixtures and measured shipped-behavior baselines](docs/testing-fixtures.md)
+for corpus sizes, compatibility/fault coverage, reproduction commands and measurement gaps.
+
 CI exercises Windows, Linux and macOS, the minimum and stable Go toolchains, and
 Linux race detection. Contributions should include regression tests, especially
 for data preservation and corruption handling.
