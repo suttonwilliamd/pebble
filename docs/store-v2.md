@@ -172,3 +172,12 @@ check passed again in 5.719s. Final codec/allocation changes were exercised by
 `go test ./internal/storev2 -run '^(TestProductionGoldenConformance|TestStreamingFaultsCancellationAndLimits)$' -count=1`
 (4.026s), and `go vet ./internal/storev2` passed under the same offline Go 1.21.13
 Windows environment. These timings are observations, not performance targets.
+
+Native-review follow-up: exact header/metadata reads preserve non-EOF source
+errors even when the final successful bytes accompany that error and subsequent
+source reads return only EOF. `io.ReadFull` success alone is insufficient here.
+`TestTerminalSourceErrorsNeverPublish` covers the empty-chunk header, tree
+metadata and streaming-chunk boundaries with non-sticky final-bytes-plus-error
+sources, healthy retries and valid final-bytes-plus-EOF sources. The focused
+terminal-error, existing streaming-fault and production golden tests passed in
+4.257s on the same offline Go 1.21.13 Windows environment; scoped vet passed.

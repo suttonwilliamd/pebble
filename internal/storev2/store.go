@@ -243,15 +243,33 @@ func (s *Store) inject(stage, path string) error {
 }
 
 type contextReader struct {
-	ctx    context.Context
-	reader io.Reader
+	ctx     context.Context
+	reader  io.Reader
+	failure error
 }
 
-func (r contextReader) Read(p []byte) (int, error) {
+func (r *contextReader) Read(p []byte) (int, error) {
+	if r.failure != nil {
+		return 0, r.failure
+	}
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
 	}
-	return r.reader.Read(p)
+	n, err := r.reader.Read(p)
+	// Exact-read helpers can suppress an error accompanying a full buffer.
+	// A source failure is fatal even if the source later returns only EOF.
+	if err != nil && err != io.EOF {
+		r.failure = err
+	}
+	return n, err
+}
+
+func (r *contextReader) readFull(p []byte) (int, error) {
+	n, err := io.ReadFull(r, p)
+	if r.failure != nil {
+		return n, r.failure
+	}
+	return n, err
 }
 func writeAll(w io.Writer, b []byte) error {
 	n, err := w.Write(b)
@@ -267,9 +285,9 @@ func inspect(ctx context.Context, expected ID, source io.Reader, wireOut, payloa
 	if !expected.Kind.valid() {
 		return nil, invalid("id-type")
 	}
-	r := contextReader{ctx, source}
+	r := &contextReader{ctx: ctx, reader: source}
 	var header [HeaderSize]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
+	if _, err := r.readFull(header[:]); err != nil {
 		return nil, errors.Join(invalid("truncated"), err)
 	}
 	if !bytes.Equal(header[:4], []byte("PB2\x00")) {
@@ -315,7 +333,7 @@ func inspect(ctx context.Context, expected ID, source io.Reader, wireOut, payloa
 		n = &node{kind: kind, size: size}
 	} else {
 		payload := make([]byte, int(size))
-		if _, err := io.ReadFull(r, payload); err != nil {
+		if _, err := r.readFull(payload); err != nil {
 			return nil, errors.Join(invalid("truncated"), err)
 		}
 		h.Write(payload)
@@ -330,7 +348,7 @@ func inspect(ctx context.Context, expected ID, source io.Reader, wireOut, payloa
 		}
 	}
 	var extra [1]byte
-	if count, err := io.ReadFull(r, extra[:]); count != 0 || err != io.EOF {
+	if count, err := r.readFull(extra[:]); count != 0 || err != io.EOF {
 		if count != 0 {
 			return nil, invalid("trailing")
 		}
