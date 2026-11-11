@@ -46,9 +46,11 @@ See [the dogfood evaluation and next priorities](docs/dogfood-readiness.md) and 
 are plans, not evidence of shipped functionality.
 
 The [PB-01 v2 format/protocol contract](docs/contracts/v2.md) and its
-[canonical byte fixtures](internal/formatcontract/testdata/v2.json) are preparation
-for future work, **not shipped v2 support**. Verify the executable contract with
-`go test ./internal/formatcontract -count=1`; production v1 behavior is unchanged.
+[canonical byte fixtures](internal/formatcontract/testdata/v2.json) freeze the
+next engine's representation. The [PB-03 v2 store library](docs/store-v2.md)
+implements typed durable object/ref publication, **not a CLI cutover**. Verify
+with `go test ./internal/storev2 ./internal/formatcontract -count=1`; production
+v1 CLI and remote behavior are unchanged.
 
 ## Install
 
