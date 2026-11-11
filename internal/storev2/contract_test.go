@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -149,6 +150,9 @@ func TestProductionGoldenConformance(t *testing.T) {
 				}
 			}
 			err := s.Put(ctx, id, bytes.NewReader(wire))
+			if err == nil && id.Kind == Manifest {
+				err = s.CopyFile(ctx, id, io.Discard)
+			}
 			if err == nil {
 				err = s.Verify(ctx, id)
 			}
