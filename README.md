@@ -45,6 +45,11 @@ See [the dogfood evaluation and next priorities](docs/dogfood-readiness.md) and 
 [longer-term roadmap](docs/next-git-roadmap.md). Older design/checklist documents
 are plans, not evidence of shipped functionality.
 
+The [PB-01 v2 format/protocol contract](docs/contracts/v2.md) and its
+[canonical byte fixtures](internal/formatcontract/testdata/v2.json) are preparation
+for future work, **not shipped v2 support**. Verify the executable contract with
+`go test ./internal/formatcontract -count=1`; production v1 behavior is unchanged.
+
 ## Install
 
 Requires Go 1.21 or newer. Git is needed only to download/update this source.
