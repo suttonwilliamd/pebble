@@ -47,11 +47,11 @@ are plans, not evidence of shipped functionality.
 
 The [PB-01 v2 format/protocol contract](docs/contracts/v2.md) and its
 [canonical byte fixtures](internal/formatcontract/testdata/v2.json) freeze the
-next engine's representation. The [PB-03/PB-04 v2 library](docs/store-v2.md)
-implements typed durable object/ref publication and immutable paged file
-construction/streaming, **not a CLI cutover**. Verify with
-`go test ./internal/storev2 ./internal/formatcontract -count=1`; production v1 CLI
-and remote behavior are unchanged.
+next engine's representation. The [PB-03/PB-04/PB-05 v2 library](docs/store-v2.md)
+implements typed durable object/ref publication, immutable paged file
+construction/streaming, and bounded-memory content-defined ingestion, **not a
+CLI cutover**. Verify with `go test ./internal/storev2 ./internal/rock ./internal/formatcontract -count=1`;
+production v1 CLI and remote behavior are unchanged.
 
 ## Install
 
