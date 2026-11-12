@@ -133,6 +133,11 @@ func (g *graph) ancestor(old, next ID) bool {
 }
 
 func (g *graph) makeDurable() error {
+	// Visible valid pack bytes are not a completed namespace barrier. Reaffirm
+	// physical dependencies even when the same logical objects also exist loose.
+	if err := g.store.reaffirmPacks(g.ctx, g.buffer); err != nil {
+		return err
+	}
 	for id := range g.nodes {
 		if err := g.ctx.Err(); err != nil {
 			return err
