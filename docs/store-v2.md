@@ -1,11 +1,53 @@
-# PB-03 store, PB-04 immutable manifests and PB-05 streaming ingestion
+# Format2 store and PB-06 local repository engine
 
-`internal/storev2` implements the [frozen format-2 object contract](contracts/v2.md)
-as a production library: PB-03 adds the typed durable object/ref store; PB-04 adds
-immutable paged file construction and verified raw-byte reads; PB-05 adds bounded
-content-defined ingestion. **The CLI and `/v1/` service still use v1.** There is
-no migration, checkout, tag command, new server route, pack, GC or Git importer.
-Use separate disposable directories; never point an old CLI at a v2 directory.
+`internal/storev2` implements the [frozen format-2 object contract](contracts/v2.md):
+typed durable object/ref publication, immutable paged files and bounded streaming
+ingestion. `internal/repository` now powers CLI `commit`, `status`, `log`, `branch`,
+`checkout`, `restore` and `fsck`. Text/PNG/JPEG/gzip/ZIP and arbitrary bytes use the
+same `IngestFile`/`CopyFile` path, without filename or binary classification.
+The `/v1/` service remains legacy-only. There is no implicit migration, format2
+sync, merge command, GC or Git importer.
+
+## PB-06: local CLI cutover
+
+`pebble init` uses `InitRepository` to publish only new metadata in an existing
+working directory. Existing files are preserved; existing/partial metadata and
+initialization remnants are refused. The stricter library `Init` still requires
+an empty directory. Discovery stops at the nearest `.pebble`; legacy/unmarked,
+unknown and incomplete repositories fail explicitly, never fall through to an
+ancestor or another engine. Legacy push/fetch and service code reject markers.
+
+Canonical tree/commit helpers reuse the store decoder, envelope validation and
+publication. Commit parents retain their supplied order; signed seconds,
+nanoseconds, exact offset spelling, identity and message survive read/write.
+Log follows all parents in supplied order, first-parent first, without duplicates.
+Status streams raw SHA-256 and executable mode comparisons against HEAD, not an
+index or a filename heuristic; ignored tracked files remain tracked.
+
+The repository engine holds `.pebble/worktree.lock` around cooperating
+commit/branch/checkout/restore writers. Branch refs are published only through
+`UpdateRef` graph validation, fast-forward/CAS and durability. HEAD is separate
+symbolic metadata with exact CAS and verified targets; only the initial unborn
+`heads/main` may lack a commit. Additional branches require the first commit.
+
+Checkout preflights dirty tracked files, unsafe/case-aliased paths, non-files and
+untracked/ignored collisions. Identical untracked files may be adopted. All target
+files and rollback copies are staged on disk through verified `CopyFile`, synced
+and closed before any destination replacement. Restore stages and verifies one
+tracked HEAD file before discarding its edits. Provisional bytes are never
+acknowledged or installed after a copy failure. File/directory transitions remain
+explicit errors. Ordinary checkout failures attempt rollback; incomplete rollback
+or uncertain HEAD publication retains recovery staging and returns an error.
+This is not crash journaling or a guarantee against concurrent editors.
+
+The actual executable regression builds the CLI and launches a fresh process per
+operation on disposable mixed fixtures and repeated-path edit/insertion/truncation/
+empty histories. It compares exact restored bytes and independent SHA-256 for
+every revision and encoded asset, and exercises dirty/untracked/ignore guards.
+Additional regressions cover canonical golden metadata, ordered parents, legacy
+source preservation, nested incomplete discovery and late-checksum staging failure.
+Run `go test ./cmd/pebble ./internal/repository ./internal/storev2 -count=1`.
+No large-binary, arbitrary power-loss or format2 remote qualification is implied.
 
 ## API and validation boundary
 
@@ -28,6 +70,12 @@ cannot interrupt an arbitrary blocking caller-supplied reader or kernel flush.
 | `CopyFile(ctx, manifestID, destinationWriter)` | Streams raw file bytes, validating all typed addresses, page partitioning, exact lengths and whole-file checksum. Output is provisional until nil error; discard on failure. Nil destination verifies without retaining output. |
 | `UpdateRef(ctx, name, expectedIDPointer, targetID)` | Nil expected = absent; exact CAS + fast-forward branches, create-only tags, graph verification, collision checks and atomic durable publication under the writer lock. Identical retries also reverify and establish a fresh durability barrier. |
 | `GetRef(ctx, name)` | Returns a target only after validating ref metadata and complete graph, including annotated tag name binding. Missing refs wrap the existing `REF_NOT_FOUND` category and `os.ErrNotExist`. |
+| `InitRepository(ctx, workingDirectory)` | Creates only new format2 metadata and symbolic unborn main; preserves working files and rejects existing/partial metadata. |
+| `CreateTree` / `ReadTree` | Canonical typed tree bindings; sorted input is required, never silently reordered. |
+| `CreateCommit` / `ReadCommit` | Canonical metadata with ordered distinct parents and exact signed/fractional time and offset spelling. |
+| `FileInfo(ctx, manifestID)` | Verified manifest metadata length/raw SHA-256; not a replacement for `CopyFile` reconstruction checks. |
+| `ListRefs(ctx)` / `VerifyRefs(ctx)` | Verified catalog and shared bounded closure walk, including tags; returns owned targets / reachable-object count. No private-layout walking in the repository engine. |
+| `Head(ctx)` / `UpdateHead(ctx, expected, target)` | Bounded canonical symbolic HEAD; writer-locked CAS, graph-verified target and durable metadata publication, never a branch-ref write. |
 
 A structurally valid object may be stored before its dependencies arrive. This is
 not a claim that its graph/file is valid: only `Verify` or successful `UpdateRef`

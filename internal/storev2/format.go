@@ -1,5 +1,5 @@
-// Package storev2 implements the guarded format-2 object store. It is not used by
-// the v1 CLI; opening or initializing a v2 repository must be explicit.
+// Package storev2 implements the guarded format-2 object store used by the local
+// repository engine. Legacy services remain separate and reject marked stores.
 package storev2
 
 import (

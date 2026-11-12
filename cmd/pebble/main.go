@@ -8,6 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/suttonwilliamd/pebble/internal/repository"
+	"github.com/suttonwilliamd/pebble/internal/storev2"
 
 	"github.com/suttonwilliamd/pebble/internal/snapshot"
 	"github.com/suttonwilliamd/pebble/internal/syncproto"
@@ -40,8 +44,9 @@ Usage:
   pebble help                     Show this help
 
 Identity: set PEBBLE_AUTHOR and PEBBLE_EMAIL before committing.
-Remotes: PEBBLE_TOKEN_FILE; HTTPS or loopback/SSH tunnel. 32 MiB limit.
-Fetch never changes working files. Pull/merge are not ready; keep Git and backups.`)
+Remotes: legacy v1 repositories only; format2 sync is not implemented.
+Legacy/unmarked repositories require explicit migration for local commands.
+Checkout is not crash-transactional; keep Git and backups.`)
 }
 func run(args []string, cwd string, w io.Writer) error {
 	if len(args) == 0 {
@@ -64,7 +69,7 @@ func run(args []string, cwd string, w io.Writer) error {
 		if len(params) != 0 {
 			return errors.New("usage: pebble init")
 		}
-		repo, err := snapshot.Init(cwd)
+		repo, err := repository.Init(cwd)
 		if err != nil {
 			return err
 		}
@@ -85,7 +90,14 @@ func run(args []string, cwd string, w io.Writer) error {
 		fmt.Fprintln(w, "Initialized empty Pebble repository in", repo.RootPath())
 		return nil
 	}
-	repo, err := snapshot.NewRepository(cwd)
+	if cmd == "push" || cmd == "fetch" {
+		legacy, err := snapshot.NewRepository(cwd)
+		if err != nil {
+			return err
+		}
+		return handleSync(cmd, params, legacy, w)
+	}
+	repo, err := repository.Open(cwd)
 	if err != nil {
 		return err
 	}
@@ -105,7 +117,7 @@ func run(args []string, cwd string, w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "[%s] %s\n", hash[:8], strings.Join(params, " "))
+		fmt.Fprintf(w, "[%x] %s\n", hash.Digest[:4], strings.Join(params, " "))
 	case "status":
 		if len(params) != 0 {
 			return errors.New("usage: pebble status")
@@ -129,30 +141,23 @@ func run(args []string, cwd string, w io.Writer) error {
 		if len(params) != 0 {
 			return errors.New("usage: pebble log")
 		}
-		ref, err := repo.GetHead()
+		id, err := repo.CurrentID()
 		if err != nil {
 			return err
 		}
-		hash, err := repo.GetRef(ref)
-		if err != nil {
-			return err
-		}
-		if hash == "" {
+		if id == (storev2.ID{}) {
 			fmt.Fprintln(w, "No commits yet")
 		}
-		seen := map[string]bool{}
-		for hash != "" {
-			if seen[hash] {
-				return errors.New("cycle in commit history")
-			}
-			seen[hash] = true
-			c, err := repo.GetCommit(hash)
+		return repo.Log(func(id storev2.ID, c storev2.CommitData) error {
+			zone, err := time.Parse("-0700", c.Offset)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(w, "commit %s\nAuthor: %s <%s>\nDate:   %s\n\n    %s\n\n", hash, c.Author, c.Email, c.Timestamp.Format("Mon Jan 2 15:04:05 2006 -0700"), c.Message)
-			hash = c.Parent
-		}
+			_, offset := zone.Zone()
+			stamp := time.Unix(c.Seconds, int64(c.Nanoseconds)).In(time.FixedZone(c.Offset, offset))
+			_, err = fmt.Fprintf(w, "commit %s\nAuthor: %s <%s>\nDate:   %s %s\n\n    %s\n\n", id, c.Author, c.Email, stamp.Format("Mon Jan 2 15:04:05.999999999 2006"), c.Offset, c.Message)
+			return err
+		})
 	case "branch":
 		if len(params) > 1 {
 			return errors.New("usage: pebble branch [name]")
@@ -203,8 +208,6 @@ func run(args []string, cwd string, w io.Writer) error {
 			return err
 		}
 		fmt.Fprintln(w, "Restored from HEAD:", filepath.ToSlash(rel))
-	case "push", "fetch":
-		return handleSync(cmd, params, repo, w)
 	case "fsck":
 		if len(params) != 0 {
 			return errors.New("usage: pebble fsck")
