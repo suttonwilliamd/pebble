@@ -36,6 +36,11 @@ jobs:
       - name: Filesystem normalization alias regression
         if: startsWith(matrix.os, 'macos')
         run: go test ./internal/repository -run 'TestCheckout.*Normalization' -count=1 -v
+      - name: Unprivileged POSIX read-only worktree regression
+        if: runner.os != 'Windows'
+        run: |
+          id
+          PEBBLE_REQUIRE_UNPRIVILEGED=1 go test ./internal/repository -run '^TestReadOnlyOriginalCheckoutAndRestore$' -count=1 -v
       - name: Test
         run: go test ./... -count=1
       - name: Race detection

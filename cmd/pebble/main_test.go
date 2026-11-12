@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,5 +77,37 @@ func TestCLIErrors(t *testing.T) {
 		if err := run(args, root, &out); err == nil {
 			t.Errorf("expected error for %v", args)
 		}
+	}
+}
+
+type closedRecoveryOutput struct{}
+
+func (closedRecoveryOutput) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestRecoveryReportsOutputFailure(t *testing.T) {
+	root := t.TempDir()
+	var out bytes.Buffer
+	if err := run([]string{"init"}, root, &out); err != nil {
+		t.Fatal(err)
+	}
+	precious := []byte("untracked bytes must remain")
+	path := filepath.Join(root, "precious")
+	if err := os.WriteFile(path, precious, 0600); err != nil {
+		t.Fatal(err)
+	}
+	head, err := os.ReadFile(filepath.Join(root, ".pebble", "HEAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = run([]string{"recover"}, root, closedRecoveryOutput{}); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("recovery output error hidden: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, precious) {
+		t.Fatalf("recovery changed untracked bytes: %q %v", got, err)
+	}
+	gotHead, err := os.ReadFile(filepath.Join(root, ".pebble", "HEAD"))
+	if err != nil || !bytes.Equal(gotHead, head) {
+		t.Fatalf("recovery changed HEAD: %q %v", gotHead, err)
 	}
 }

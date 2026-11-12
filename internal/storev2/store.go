@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	pe "github.com/suttonwilliamd/pebble/internal/errors"
+	"github.com/suttonwilliamd/pebble/internal/processlock"
 )
 
 const formatMarker = "pebble-format 2\n"
@@ -199,27 +200,15 @@ func (s *Store) lock(ctx context.Context) (func() error, error) {
 	if err := s.guard(); err != nil {
 		return nil, err
 	}
+	// Legacy exclusive markers are never guessed stale. New writers use a
+	// persistent OS guard whose ownership dies with the process.
 	path := filepath.Join(s.meta, "write.lock")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		return nil, storageError("legacy writer lock (inspect before removal)", errors.Join(ErrLocked, err))
+	}
+	unlock, err := processlock.Acquire(filepath.Join(s.meta, "write.guard"))
 	if err != nil {
-		return nil, storageError("writer lock (never remove a live lock)", errors.Join(ErrLocked, err))
-	}
-	_, writeErr := fmt.Fprintf(f, "pid %d\n", os.Getpid())
-	info, statErr := f.Stat()
-	closeErr := f.Close()
-	if err = errors.Join(writeErr, statErr, closeErr); err != nil {
-		os.Remove(path)
-		return nil, err
-	}
-	unlock := func() error {
-		current, err := os.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if !os.SameFile(info, current) {
-			return fmt.Errorf("writer lock was replaced; inspect %s", path)
-		}
-		return os.Remove(path)
+		return nil, storageError("writer guard", errors.Join(ErrLocked, err))
 	}
 	if err = s.guard(); err != nil {
 		return nil, errors.Join(err, unlock())

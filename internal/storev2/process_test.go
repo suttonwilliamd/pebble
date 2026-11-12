@@ -36,7 +36,11 @@ func TestStoreProcessHelper(t *testing.T) {
 		if mode == "ref" {
 			extension = ".ref"
 		}
-		if point == stage && filepath.Ext(path) == extension {
+		matches := filepath.Ext(path) == extension
+		if mode == "head" {
+			matches = filepath.Base(path) == "HEAD"
+		}
+		if point == stage && matches {
 			os.Exit(73)
 		}
 		return nil
@@ -46,6 +50,8 @@ func TestStoreProcessHelper(t *testing.T) {
 	} else if mode == "ref" {
 		old, next := goldenID(t, byName["commit-old"]), goldenID(t, byName["commit-new"])
 		err = s.UpdateRef(ctx, "heads/main", &old, next)
+	} else if mode == "head" {
+		err = s.UpdateHead(ctx, "heads/main", "heads/next")
 	} else {
 		t.Fatal("unknown helper mode")
 	}
@@ -82,7 +88,7 @@ func TestWriterLockAcrossProcesses(t *testing.T) {
 	}
 }
 
-func TestProcessInterruptionKeepsCompletePublicationAndStaleLock(t *testing.T) {
+func TestProcessInterruptionKeepsCompletePublicationAndReleasesLock(t *testing.T) {
 	byName, _ := corpus(t)
 	ctx := context.Background()
 	for _, mode := range []string{"object", "ref"} {
@@ -121,14 +127,6 @@ func TestProcessInterruptionKeepsCompletePublicationAndStaleLock(t *testing.T) {
 						t.Fatal("incomplete published object after interruption:", err)
 					}
 				}
-				if err = reopened.Put(ctx, chunk, bytes.NewReader(wire)); !errors.Is(err, ErrLocked) {
-					t.Fatal("stale lock silently removed:", err)
-				}
-				// CombinedOutput waited for the child. This is an explicit test
-				// recovery decision, never automatic production stale-lock repair.
-				if err = os.Remove(filepath.Join(s.meta, "write.lock")); err != nil {
-					t.Fatal(err)
-				}
 				if mode == "ref" {
 					if err = reopened.UpdateRef(ctx, "heads/main", &old, next); err != nil {
 						t.Fatal("retry after confirmed process exit:", err)
@@ -140,4 +138,70 @@ func TestProcessInterruptionKeepsCompletePublicationAndStaleLock(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestHEADProcessInterruptionAndRetry(t *testing.T) {
+	ctx := context.Background()
+	byName, _ := corpus(t)
+	for _, stage := range []string{"file-sync", "close", "before-publish", "namespace-sync", "after-publish"} {
+		t.Run(stage, func(t *testing.T) {
+			s, err := InitRepository(ctx, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			putGoldens(t, s, byName, "commit-new")
+			old, next := goldenID(t, byName["commit-old"]), goldenID(t, byName["commit-new"])
+			if err = s.UpdateRef(ctx, "heads/main", nil, old); err != nil {
+				t.Fatal(err)
+			}
+			if err = s.UpdateRef(ctx, "heads/next", nil, next); err != nil {
+				t.Fatal(err)
+			}
+			output, err := process(t, s.root, "head", stage)
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 73 {
+				t.Fatalf("HEAD child did not interrupt: %v\n%s", err, output)
+			}
+			s, err = Open(s.root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			head, err := s.Head(ctx)
+			if err != nil || head != "heads/main" && head != "heads/next" {
+				t.Fatalf("partial HEAD: %q %v", head, err)
+			}
+			want := old
+			if head == "heads/next" {
+				want = next
+			}
+			assertRef(t, s, head, want)
+			if err = s.UpdateHead(ctx, head, "heads/next"); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := s.Head(ctx); err != nil || got != "heads/next" {
+				t.Fatalf("HEAD retry: %s %v", got, err)
+			}
+			assertRef(t, s, "heads/next", next)
+		})
+	}
+}
+
+func TestLegacyWriterMarkerIsNotStolen(t *testing.T) {
+	s := newStore(t)
+	byName, _ := corpus(t)
+	marker := []byte("legacy owner must be inspected\n")
+	path := filepath.Join(s.meta, "write.lock")
+	if err := os.WriteFile(path, marker, 0600); err != nil {
+		t.Fatal(err)
+	}
+	id := goldenID(t, byName["chunk-a"])
+	err := s.Put(context.Background(), id, bytes.NewReader(goldenBytes(t, byName["chunk-a"])))
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("legacy marker bypassed: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, marker) {
+		t.Fatalf("legacy marker changed: %q %v", got, err)
+	}
+	assertAbsent(t, s.objectPath(id))
 }

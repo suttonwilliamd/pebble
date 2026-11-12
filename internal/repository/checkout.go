@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/suttonwilliamd/pebble/internal/storev2"
 )
 
-func (r *Repository) stageFile(dir string, e storev2.TreeEntry) (_ string, err error) {
+func (r *Repository) stageFile(dir string, e storev2.TreeEntry) (string, error) {
+	return r.stageFileContext(context.Background(), dir, e)
+}
+func (r *Repository) stageFileContext(ctx context.Context, dir string, e storev2.TreeEntry) (_ string, err error) {
 	f, err := os.CreateTemp(dir, "file-")
 	if err != nil {
 		return "", err
@@ -21,11 +25,14 @@ func (r *Repository) stageFile(dir string, e storev2.TreeEntry) (_ string, err e
 			os.Remove(p)
 		}
 	}()
-	// CopyFile may write bytes before a late integrity failure. Nothing outside
-	// this private stage can observe them until verification, sync and close pass.
-	err = r.store.CopyFile(context.Background(), e.Manifest, f)
+	// CopyFile can produce bytes before a late integrity failure. Only this private
+	// stage sees them until verification, mode, file barrier and close all pass.
+	err = r.store.CopyFile(ctx, e.Manifest, f)
 	if err == nil {
 		err = f.Chmod(mode(e.Executable))
+	}
+	if err == nil {
+		err = r.boundary(ctx, "stage-sync", e.Path)
 	}
 	if err == nil {
 		err = f.Sync()
@@ -44,59 +51,38 @@ func (r *Repository) matches(e storev2.TreeEntry) (bool, error) {
 	length, sum, err := r.store.FileInfo(context.Background(), e.Manifest)
 	return err == nil && f.size == length && f.sum == sum && f.executable == e.Executable, err
 }
-func (r *Repository) Restore(name string) (err error) {
+
+// Restore explicitly discards edits to one tracked file. After interruption,
+// Recover finishes that same intent, but refuses any subsequent external edit.
+func (r *Repository) Restore(name string) error { return r.RestoreContext(context.Background(), name) }
+func (r *Repository) RestoreContext(ctx context.Context, name string) (err error) {
 	unlock, err := r.lock()
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, unlock()) }()
-	entries, err := r.TreeEntries()
+	head, id, err := r.current()
 	if err != nil {
 		return err
 	}
-	var entry *storev2.TreeEntry
-	for i := range entries {
-		if entries[i].Path == name {
-			entry = &entries[i]
-			break
+	entries, err := r.tree(id)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Path == name {
+			return r.prepareWorktree(ctx, "restore", name, head, head, id, id, nil, []storev2.TreeEntry{entry})
 		}
 	}
-	if entry == nil {
-		return fmt.Errorf("path is not tracked at HEAD: %s", name)
-	}
-	target, err := r.safePath(name)
-	if err != nil {
-		return err
-	}
-	if info, e := os.Lstat(target); e == nil {
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("restore would overwrite non-file: %s", name)
-		}
-	} else if !os.IsNotExist(e) {
-		return e
-	}
-	dir, err := os.MkdirTemp(filepath.Join(r.root, ".pebble"), "worktree-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	staged, err := r.stageFile(dir, *entry)
-	if err != nil {
-		return err
-	}
-	if _, err = r.safePath(name); err != nil {
-		return err
-	}
-	if err = os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-		return err
-	}
-	return os.Rename(staged, target)
+	return fmt.Errorf("path is not tracked at HEAD: %s", name)
 }
 
-// Checkout preflights all data before changing any user path. Ordinary I/O
-// failures roll back from verified on-disk backups. This is not a crash journal.
-// File/directory transitions remain explicitly unsupported, never skipped.
-func (r *Repository) Checkout(name string) (err error) {
+// Checkout refuses tracked edits and conflicting untracked paths. File/directory
+// transitions remain unsupported; no user path changes before durable intent.
+func (r *Repository) Checkout(name string) error {
+	return r.CheckoutContext(context.Background(), name)
+}
+func (r *Repository) CheckoutContext(ctx context.Context, name string) (err error) {
 	if !storev2.ValidBranch(name) {
 		return fmt.Errorf("invalid branch name %q", name)
 	}
@@ -105,8 +91,7 @@ func (r *Repository) Checkout(name string) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, unlock()) }()
-	ctx := context.Background()
-	head, _, err := r.current()
+	head, oldID, err := r.current()
 	if err != nil {
 		return err
 	}
@@ -115,7 +100,7 @@ func (r *Repository) Checkout(name string) (err error) {
 	if err != nil {
 		return err
 	}
-	old, err := r.TreeEntries()
+	old, err := r.tree(oldID)
 	if err != nil {
 		return err
 	}
@@ -136,133 +121,113 @@ func (r *Repository) Checkout(name string) (err error) {
 			return fmt.Errorf("checkout refused: uncommitted change to %s", c.Path)
 		}
 	}
-	dir, err := os.MkdirTemp(filepath.Join(r.root, ".pebble"), "worktree-")
+	return r.prepareWorktree(ctx, "checkout", "", head, ref, oldID, id, old, target)
+}
+
+func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead, afterHead string, beforeID, afterID storev2.ID, old, target []storev2.TreeEntry) (err error) {
+	dir, err := os.MkdirTemp(filepath.Join(r.root, ".pebble"), "worktree-stage-")
 	if err != nil {
 		return err
 	}
-	keepStage := false
-	defer func() {
-		if !keepStage {
-			os.RemoveAll(dir)
-		}
-	}()
+	// Only the unpublished private name is removed here, never an active journal.
+	defer os.RemoveAll(dir)
 	if err = preflightFilesystemPaths(dir, target); err != nil {
 		return err
 	}
-	before := map[string]storev2.TreeEntry{}
-	backup := map[string]string{}
-	staged := map[string]string{}
-	adopt := map[string]bool{}
+	plan := worktreeIntent{Kind: kind, RestorePath: name, BeforeHead: beforeHead, AfterHead: afterHead, BeforeID: beforeID, AfterID: afterID}
+	before, after := map[string]storev2.TreeEntry{}, map[string]storev2.TreeEntry{}
+	names := map[string]bool{}
 	for _, e := range old {
 		before[e.Path] = e
-		backup[e.Path], err = r.stageFile(dir, e)
+		names[e.Path] = true
+	}
+	for _, e := range target {
+		after[e.Path] = e
+		names[e.Path] = true
+	}
+	sorted := make([]string, 0, len(names))
+	for path := range names {
+		sorted = append(sorted, path)
+	}
+	sort.Strings(sorted)
+	for i, path := range sorted {
+		if err = r.boundary(ctx, "prepare-file", path); err != nil {
+			return err
+		}
+		p, err := r.safePath(path)
 		if err != nil {
 			return err
 		}
-	}
-	preflight := func() error {
-		for _, e := range old {
-			ok, err := r.matches(e)
+		original, err := inspectImage(r, path)
+		if err != nil {
+			return err
+		}
+		file := journalFile{Path: path, Original: original}
+		if entry, tracked := before[path]; tracked {
+			ok, err := r.matches(entry)
 			if err != nil {
 				return err
 			}
 			if !ok {
-				return fmt.Errorf("file changed during checkout: %s", e.Path)
+				return fmt.Errorf("file changed during checkout: %s", path)
 			}
 		}
-		for _, e := range target {
-			p, err := r.safePath(e.Path)
-			if err != nil {
-				return err
+		if entry, exists := after[path]; exists {
+			if original != nil && kind == "checkout" {
+				ok, err := r.matches(entry)
+				if err != nil {
+					return err
+				}
+				if _, tracked := before[path]; !tracked && !ok {
+					return fmt.Errorf("checkout would overwrite untracked file: %s", path)
+				}
+				file.Keep = ok
 			}
-			info, err := os.Lstat(p)
-			if err == nil {
-				if !info.Mode().IsRegular() {
-					return fmt.Errorf("checkout would overwrite directory or non-file: %s", e.Path)
-				}
-				if _, tracked := before[e.Path]; !tracked {
-					ok, err := r.matches(e)
-					if err != nil {
-						return err
-					}
-					if !ok {
-						return fmt.Errorf("checkout would overwrite untracked file: %s", e.Path)
-					}
-					adopt[e.Path] = true
-				}
-			} else if !os.IsNotExist(err) {
-				return err
+			if file.Keep {
+				file.Target = original
 			} else {
-				delete(adopt, e.Path)
+				temporary, err := r.stageFileContext(ctx, dir, entry)
+				if err != nil {
+					return err
+				}
+				if err = os.Rename(temporary, filepath.Join(dir, stageName(i))); err != nil {
+					return err
+				}
+				file.Target, err = inspectImage(&Repository{root: dir}, stageName(i))
+				if err != nil {
+					return err
+				}
 			}
 		}
-		return nil
+		// Original bytes themselves are atomically moved into the retained slot.
+		// Flush them before intent: restore's dirty original may not be in the store.
+		if original != nil {
+			if err = syncOriginal(p); err != nil {
+				return err
+			}
+		}
+		plan.Files = append(plan.Files, file)
 	}
-	if err = preflight(); err != nil {
+	if err = r.prepareDirectories(dir, &plan); err != nil {
 		return err
 	}
-	for _, e := range target {
-		staged[e.Path], err = r.stageFile(dir, e)
-		if err != nil {
-			return err
-		}
-	}
-	if err = preflight(); err != nil {
+	if err = r.validateIntent(&plan); err != nil {
 		return err
 	}
-	written := []string{}
-	removed := []string{}
-	rollback := func(cause error) error {
-		var failures error
-		for _, name := range written {
-			if e := os.Remove(filepath.Join(r.root, filepath.FromSlash(name))); e != nil && !os.IsNotExist(e) {
-				failures = errors.Join(failures, e)
-			}
-		}
-		for _, name := range removed {
-			if e := os.Rename(backup[name], filepath.Join(r.root, filepath.FromSlash(name))); e != nil {
-				failures = errors.Join(failures, e)
-			}
-		}
-		if failures != nil {
-			keepStage = true
-			return errors.Join(cause, fmt.Errorf("rollback incomplete; backups retained at %s; committed objects remain intact: %w", dir, failures))
-		}
-		return cause
+	if err = r.inspectTransaction(dir, &plan); err != nil {
+		return err
 	}
-	for _, e := range old {
-		p, err := r.safePath(e.Path)
-		if err != nil {
-			return rollback(err)
-		}
-		if err = os.Remove(p); err != nil {
-			return rollback(err)
-		}
-		removed = append(removed, e.Path)
+	if err = writeIntent(dir, &plan); err != nil {
+		return err
 	}
-	for _, e := range target {
-		if adopt[e.Path] {
-			continue
-		}
-		p, err := r.safePath(e.Path)
-		if err != nil {
-			return rollback(err)
-		}
-		if err = os.MkdirAll(filepath.Dir(p), 0755); err != nil {
-			return rollback(err)
-		}
-		if err = os.Rename(staged[e.Path], p); err != nil {
-			return rollback(err)
-		}
-		written = append(written, e.Path)
+	if err = r.boundary(ctx, "journal-publish", dir); err != nil {
+		return err
 	}
-	if err = r.store.UpdateHead(ctx, head, ref); err != nil {
-		observed, readErr := r.GetHead()
-		if readErr != nil || observed != head || errors.Is(err, storev2.ErrPublicationUncertain) {
-			keepStage = true
-			return errors.Join(err, readErr, fmt.Errorf("HEAD publication may have completed; inspect repository before retry"))
-		}
-		return rollback(err)
+	if err = publishMigration(dir, r.journalPath()); err != nil {
+		return fmt.Errorf("journal publication uncertain; run pebble recover: %w", err)
 	}
-	return nil
+	if err = r.boundary(ctx, "journal-published", r.journalPath()); err != nil {
+		return err
+	}
+	return r.resumeWorktree(ctx, &plan)
 }

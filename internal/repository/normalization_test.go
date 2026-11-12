@@ -225,3 +225,51 @@ func TestCheckoutPreservesDistinctNormalizationPaths(t *testing.T) {
 		t.Fatalf("checkout tree differs: %v %v", changes, err)
 	}
 }
+
+func TestRecoveryRefusesPostInterruptionNormalizationAlias(t *testing.T) {
+	r, parent := normalizationFixture(t)
+	if !normalizationAliases(t, r.root) {
+		t.Skip("fixture filesystem distinguishes normalization spellings")
+	}
+	// Use the spelling actually representable on this filesystem as the target.
+	probe := t.TempDir()
+	if err := os.WriteFile(filepath.Join(probe, composedName), []byte("probe"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	children, err := os.ReadDir(probe)
+	if err != nil || len(children) != 1 {
+		t.Fatalf("normalization probe: %v %v", children, err)
+	}
+	target, alias := children[0].Name(), decomposedName
+	if target == decomposedName {
+		alias = composedName
+	}
+	normalizationBranch(t, r, parent, []struct {
+		path string
+		data []byte
+	}{{target, []byte("incoming")}})
+	stop := errors.New("interrupted after intent")
+	r.fault = func(stage, path string) error {
+		if stage == "journal-published" {
+			return stop
+		}
+		return nil
+	}
+	if err = r.Checkout("normalization"); !errors.Is(err, stop) {
+		t.Fatal(err)
+	}
+	precious := []byte("later untracked normalization-alias bytes")
+	write(t, r.root, alias, precious)
+	r, err = Open(r.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = r.Recover(context.Background()); err == nil {
+		t.Fatal("post-interruption alias accepted")
+	}
+	assertNormalizationPreserved(t, r, parent)
+	got, err := os.ReadFile(filepath.Join(r.root, alias))
+	if err != nil || !bytes.Equal(got, precious) {
+		t.Fatalf("alias bytes lost: %q %v", got, err)
+	}
+}

@@ -14,6 +14,7 @@ and independent backups while dogfooding.
 - Checkout refuses dirty tracked files, untracked/ignored file collisions, unsafe
   paths and corrupt target objects before changing files.
 - Explicit single-file recovery from HEAD with `pebble restore <file>`.
+- Durable checkout/restore journals and explicit `pebble recover` roll-forward.
 - Integrity verification of every stored object/copy and all refs with `pebble fsck`,
   including unreachable loose/packed objects and complete dependency closure.
 - Repository discovery from subdirectories; explicit initialization; writer locks
@@ -39,8 +40,6 @@ and independent backups while dogfooding.
   large-binary scalability or improvements over Git.
 - Symlinks/special files and empty directories in snapshots. Non-ignored symlinks
   and special files cause an error rather than being silently lost.
-- Crash-atomic checkout: ordinary I/O errors trigger a best-effort file-content
-  rollback, but power loss or process termination can interrupt checkout.
 - Full filesystem metadata preservation: executable bit on Unix is supported;
   ACLs, arbitrary permission bits, ownership and timestamps are not preserved.
 
@@ -164,17 +163,28 @@ Review `pebble status` for secrets before committing; `.gitignore` is not read.
 
 ### Safety and recovery
 
-- Do not edit files concurrently with commit/checkout. The lock serializes Pebble
-  writers, not editors or other tools. Repository metadata is assumed locally
-  trusted; do not open a malicious `.pebble` directory.
-- If an interrupted process leaves `.pebble/write.lock` or
-  `.pebble/worktree.lock`, first ensure no writer is running. Never remove an active
-  lock. Interrupted initialization also requires manual inspection, not retry/reset.
-- After interruption, back up the entire directory and run `pebble fsck`.
-  Committed objects remain available; automatic checkout recovery is not yet built.
-- Ordinary checkout failures attempt rollback using verified disk-backed backups.
-  Incomplete rollback or uncertain HEAD publication retains its staging directory
-  and returns an error. Do not delete recovery files before inspection.
+- Do not edit files concurrently with commit/checkout/restore/recovery. Locks
+  serialize cooperating Pebble processes, not editors. Metadata is locally trusted;
+  do not open a malicious `.pebble` directory or mix old/new Pebble writers.
+- After interruption, back up the entire directory, run `pebble fsck`, then
+  `pebble recover`. Reopening never silently mutates files. Recovery finishes the
+  original checkout/restore, not a new command or an automatic rollback.
+- Pending `.pebble/worktree-journal` blocks commit, branch, checkout, restore and
+  status. Target bytes and intent are durable before working paths change.
+  Replaced/removed originals (including restore's discarded edits) stay in
+  `old-*` slots until completion. Do not edit/delete recovery files.
+- Recovery checks recorded filesystem identities, bytes, modes and directory
+  spellings. Later edits, replacements (even identical bytes), untracked collisions,
+  aliases, changed branches, missing/corrupt/unsupported intent or barrier errors
+  fail closed. Preserve the journal and files for inspection; do not force recovery.
+- New persistent `.pebble/worktree.guard` and `write.guard` use OS process locks,
+  released on exit. Never unlink guard files. Legacy `worktree.lock`/`write.lock`
+  markers still require manual inspection and confirmation no old writer is live.
+  Interrupted initialization also needs manual inspection, not retry/reset.
+- Successful completion means files and symbolic HEAD have passed platform
+  durability barriers. V2 has no mutable staging index: status derives from HEAD.
+  Process-kill tests are not hardware power-loss qualification. File/directory
+  transitions, symlinks and arbitrary concurrent filesystem mutation remain unsupported.
 
 ## Remote test service
 

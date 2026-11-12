@@ -413,13 +413,6 @@ func TestPackProcessInterruptionRecovery(t *testing.T) {
 			if err = reopened.Verify(ctx, goldenID(t, byName["commit-old"])); err != nil {
 				t.Fatal("pack lost at interruption", err)
 			}
-			if err = reopened.RebuildPackIndexes(ctx); !errors.Is(err, ErrLocked) {
-				t.Fatal("stale writer lock removed", err)
-			}
-			// The child has exited. Explicit fixture-only recovery, not automatic lock stealing.
-			if err = os.Remove(filepath.Join(s.meta, "write.lock")); err != nil {
-				t.Fatal(err)
-			}
 			if err = reopened.RebuildPackIndexes(ctx); err != nil {
 				t.Fatal(err)
 			}

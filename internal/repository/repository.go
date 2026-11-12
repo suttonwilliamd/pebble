@@ -10,12 +10,15 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/suttonwilliamd/pebble/internal/processlock"
 	"github.com/suttonwilliamd/pebble/internal/storev2"
 )
 
 type Repository struct {
 	root  string
 	store *storev2.Store
+	// Private, instance-scoped fault seam at real transaction I/O boundaries.
+	fault func(stage, path string) error
 }
 type Change struct{ Code, Path string }
 type Ref struct {
@@ -32,7 +35,7 @@ func Init(path string) (*Repository, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Repository{root, s}, nil
+	return &Repository{root: root, store: s}, nil
 }
 func Open(path string) (*Repository, error) {
 	root, err := filepath.Abs(path)
@@ -46,7 +49,7 @@ func Open(path string) (*Repository, error) {
 			if err != nil {
 				return nil, fmt.Errorf("cannot open repository (legacy/unmarked repositories require explicit migration): %w", err)
 			}
-			r := &Repository{root, s}
+			r := &Repository{root: root, store: s}
 			if _, err = r.GetHead(); err != nil {
 				return nil, err
 			}
@@ -133,21 +136,29 @@ func (r *Repository) TreeEntries() ([]storev2.TreeEntry, error) {
 	}
 	return r.tree(id)
 }
-func (r *Repository) lock() (func() error, error) {
-	// Cooperating CLI operations hold this lock across working-tree preflight and
-	// HEAD/ref publication. Store writes independently acquire store's write lock.
+func (r *Repository) operationLock() (func() error, error) {
 	if _, err := storev2.Open(r.root); err != nil {
 		return nil, err
 	}
 	p := filepath.Join(r.root, ".pebble", "worktree.lock")
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("legacy working tree lock (inspect %s): %w", p, errors.Join(os.ErrExist, err))
+	}
+	unlock, err := processlock.Acquire(filepath.Join(r.root, ".pebble", "worktree.guard"))
 	if err != nil {
-		return nil, fmt.Errorf("working tree locked (inspect %s): %w", p, err)
+		return nil, fmt.Errorf("working tree locked: %w", err)
 	}
-	if err = f.Close(); err != nil {
-		return nil, errors.Join(err, os.Remove(p))
+	return unlock, nil
+}
+func (r *Repository) lock() (func() error, error) {
+	unlock, err := r.operationLock()
+	if err != nil {
+		return nil, err
 	}
-	return func() error { return os.Remove(p) }, nil
+	if _, err = os.Lstat(r.journalPath()); !errors.Is(err, os.ErrNotExist) {
+		return nil, errors.Join(fmt.Errorf("working tree recovery required; run pebble recover"), err, unlock())
+	}
+	return unlock, nil
 }
 func (r *Repository) Verify() (int, error) {
 	ctx := context.Background()

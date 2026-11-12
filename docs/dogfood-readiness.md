@@ -66,10 +66,10 @@ run where OS permissions allow them.
 
 ## Next implementation priorities
 
-1. **Recoverable checkout transactions.** Durable journal, startup recovery and
-   injected failures at every filesystem step. Cover full disks, permission errors,
-   cancellation, file/directory transitions, case collisions and interrupted writes.
-   Current rollback is best effort, not a durability guarantee.
+1. **Recoverable checkout qualification.** PB-09 adds durable roll-forward intent
+   and explicit `pebble recover`, with filesystem faults, process interruption,
+   cancellation and external-edit preservation regressions. File/directory
+   transitions remain PB-10; physical power-loss qualification remains outstanding.
 2. **Wire ROCK into the snapshot format.** Versioned file manifests referencing
    chunks, streaming reads/writes, hash/type domain separation and a migration plan.
    Measure binary edits, insertion-heavy workloads, peak RSS and storage amplification.
@@ -87,11 +87,13 @@ run where OS permissions allow them.
 
 ## Known constraints
 
-Whole-file JSON/base64 storage and hashing still consume memory proportional to
-file size. No staging, merge CLI, remotes, GC, automatic migration or durable
-checkout journal. No symlinks, special files, empty directory snapshots or full
-permission/ACL preservation. Local metadata must be trusted. Do not run editors
-or external filesystem mutations concurrently with a snapshot/checkout.
+Format2 local commands use streaming chunks/manifests and checksummed packs;
+legacy v1 remains whole-file JSON/base64. No staging, merge CLI, format2 remotes,
+GC or automatic migration. Checkout/restore have explicit journal recovery;
+they are not a guarantee against concurrent editors or arbitrary hardware failure.
+No symlinks, special files, empty directory snapshots or full permission/ACL
+preservation. Local metadata must be trusted. Keep files quiescent during
+snapshot/checkout/restore/recovery; later conflicting edits make recovery stop.
 
 The original README comparison that Git "stores full snapshots" and therefore
 necessarily bloats binaries was misleading: Git models snapshots but also uses
