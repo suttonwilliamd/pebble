@@ -146,7 +146,12 @@ func (r *Repository) changes(old []storev2.TreeEntry, files []workingFile) ([]Ch
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
 	return changes, nil
 }
-func (r *Repository) Status() ([]Change, error) {
+func (r *Repository) Status() (_ []Change, err error) {
+	unlock, err := r.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, unlock()) }()
 	old, err := r.TreeEntries()
 	if err != nil {
 		return nil, err

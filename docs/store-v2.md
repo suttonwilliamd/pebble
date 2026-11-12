@@ -4,10 +4,79 @@
 typed durable object/ref publication, immutable paged files, bounded streaming
 ingestion and compressed checksummed physical packs with rebuildable indexes.
 `internal/repository` now powers CLI `commit`, `status`, `log`, `branch`,
-`checkout`, `restore` and `fsck`. Text/PNG/JPEG/gzip/ZIP and arbitrary bytes use the
+`checkout`, `restore`, `recover` and `fsck`. Text/PNG/JPEG/gzip/ZIP and arbitrary bytes use the
 same `IngestFile`/`CopyFile` path, without filename or binary classification.
 The `/v1/` service remains legacy-only. There is no implicit migration, format2
 sync, merge command, GC or Git importer.
+
+## PB-09: recoverable checkout and restore
+
+Checkout and restore now publish an immutable, versioned, SHA-256-checksummed
+local intent in `.pebble/worktree-journal` before any working-path mutation.
+This is repository coordination above the immutable store, not another object
+codec or format-2 change. No staging index is introduced: the coherent index view
+remains the committed HEAD tree.
+The encoded intent is bounded to 64 MiB and the existing graph-count limit;
+oversized plans fail before any working-path mutation.
+
+Intent pins source/target symbolic HEAD and commit IDs, the exact affected path
+set, original/target file identities, sizes, raw hashes, executable modes and
+modification times, and existing/new directory identities. Verified target files
+are synced and closed in a private `worktree-stage-*` directory; publishing the
+whole stage reuses migration's file/directory barriers and no-replace publication.
+Original files are synced before intent, then atomically moved into retained
+`old-*` slots; verified targets move out of `new-*` slots without replacement.
+Directory creation is likewise a recorded, no-replace directory move. These
+identities and locations encode progress without a mutable last-step counter.
+
+`Repository.CheckoutContext`, `RestoreContext` and `Recover(context.Context)`
+support cancellation. Existing Checkout/Restore signatures remain. Reopen is
+read-only; `pebble recover` explicitly resumes the pending original intent.
+All recovery material, branch pins and affected live paths are checked before
+resuming. Recovery never infers ownership from matching bytes alone. Unexpected
+edits/deletions/replacements, aliases, non-files, directory substitution, missing
+material, invalid checksums/versions/shape and branch changes return errors,
+retaining the journal. Resolve conflicts only after preserving both the complete
+directory and retained material; there is no force/abort command.
+
+Recovery rolls forward, not back: it completes the original branch checkout or
+the explicitly requested discard-one-tracked-file restore. It can be repeated.
+Before HEAD CAS, completed namespaces are re-barriered (POSIX directory sync;
+Windows identity-preserving moves through recorded target slots). HEAD retries
+re-publish through store validation/CAS/barriers, including when already equal.
+Only after files and HEAD are coherent and durable is the whole active journal
+retired by a durable directory rename to `worktree-completed-*`; cleanup cannot
+leave a partially deleted active intent. A cleanup interruption may leave private
+completed debris; a pre-intent interruption may leave an unused `worktree-stage-*`.
+Neither is a pending transaction. Do not treat a publication/barrier error as
+success merely because the new bytes are visible.
+
+Persistent `worktree.guard` and `write.guard` use nonblocking OS process locks
+(flock / LockFileEx), released by the OS on process death. Never unlink a guard.
+Existing legacy exclusive lock markers remain fail-closed; no PID guessing or
+automatic legacy-lock removal occurs. Do not run older binaries concurrently.
+Pending intent blocks commit/branch/checkout/restore/status; object inspection,
+log and fsck remain read-only and do not claim that a partial tree is clean.
+
+Checkout still refuses tracked dirty work and conflicting untracked/ignored
+paths, and adopts only identical, exactly spelled untracked files without
+rewriting them. Restore still explicitly discards only its selected tracked
+file's edits, retaining that original until completion. Unrelated files are
+untouched. Existing case/normalization/path and corruption guards remain.
+File/directory transitions remain rejected (PB-10); no new ignore behavior.
+Editors and other noncooperating namespace writers must remain quiescent. A race
+detected after moving an original retains its exact bytes in the journal, not
+necessarily at the original pathname. These guards are not an adversarial
+filesystem sandbox or hardware/controller power-loss certification.
+
+Regression coverage uses generated disposable trees: every observed transaction
+fault/child-exit boundary, explicit process kill/reopen and built-CLI recovery,
+idempotent retries, cancellation, live cross-process exclusion, dirty restore
+originals, post-interruption external edits/identical replacements, directory and
+case aliases, and corrupt/incomplete/unsupported journals. Existing executable
+tests cover packed mixed binary/compressed/repeated-path histories and preflight
+dirty/untracked/corrupt-source protection. Validation results are reported per
+toolchain/platform separately from remote CI; process exits do not cut power.
 
 ## PB-08: explicit verified v1 migration
 
@@ -95,8 +164,8 @@ Log follows all parents in supplied order, first-parent first, without duplicate
 Status streams raw SHA-256 and executable mode comparisons against HEAD, not an
 index or a filename heuristic; ignored tracked files remain tracked.
 
-The repository engine holds `.pebble/worktree.lock` around cooperating
-commit/branch/checkout/restore writers. Branch refs are published only through
+The repository engine holds an OS lock on `.pebble/worktree.guard` around cooperating
+commit/branch/checkout/restore/recovery/status operations. Branch refs are published only through
 `UpdateRef` graph validation, fast-forward/CAS and durability. HEAD is separate
 symbolic metadata with exact CAS and verified targets; only the initial unborn
 `heads/main` may lack a commit. Additional branches require the first commit.
@@ -109,13 +178,11 @@ normalization aliases cannot be adopted or traversed through an untracked path.
 Unrepresentable trees are refused, never Unicode-normalized into different paths.
 Filesystems that distinguish canonically equivalent spellings retain both.
 Identical untracked files with exact path spellings may be adopted. All target
-files and rollback copies are staged on disk through verified `CopyFile`, synced
-and closed before any destination replacement. Restore stages and verifies one
-tracked HEAD file before discarding its edits. Provisional bytes are never
-acknowledged or installed after a copy failure. File/directory transitions remain
-explicit errors. Ordinary checkout failures attempt rollback; incomplete rollback
-or uncertain HEAD publication retains recovery staging and returns an error.
-This is not crash journaling or a guarantee against concurrent editors.
+files are staged through verified `CopyFile`, synced and closed before intent
+publication. Restore verifies one tracked HEAD file before discarding its edits.
+Provisional bytes are never installed after a copy failure. File/directory
+transitions remain explicit errors. PB-09 replaces ordinary best-effort rollback
+with the durable recovery journal described above.
 
 `fsck` uses the public `Inventory` facade to validate every published loose and
 packed physical copy, including unreachable objects and duplicate representations.
@@ -211,7 +278,9 @@ root/.pebble/
   pack-PACKHASH.pack        optional immutable physical container
   pack-PACKHASH.idx         checksummed derived index
   pack-catalog              checksummed derived pack inventory
-  write.lock                transient exclusive writer lock
+  write.guard               persistent OS writer-lock guard (never unlink)
+  worktree.guard            persistent OS working-tree guard (never unlink)
+  worktree-journal/         optional active checkout/restore recovery intent
 ```
 
 `DIGEST` is 64 lowercase hex digits. `NAMEHASH` is lowercase SHA-256 of the exact
@@ -237,7 +306,7 @@ processes, not editors, old binaries or external mutation.
 ## Publication and durability
 
 1. Check context, exact format marker and directory guards; acquire
-   `.pebble/write.lock` using create-exclusive; repeat the format guard under lock.
+   `.pebble/write.guard` with an OS process lock; repeat the format guard under lock.
 2. Validate any preexisting target object or current ref/graph before replacing
    it. For refs, validate the new complete graph, CAS, ancestry, names and types.
    Reestablish unknown closure-object durability through the same real file and
@@ -272,10 +341,10 @@ claiming that nothing happened. There is never an acknowledged partial ref.
 Reopen/verify and retry the **same** intent/bytes. The retry revalidates content
 and republishes through the durability barrier; it cannot hide corruption.
 
-An interrupted writer leaves an exclusive lock and possibly unpublished temps.
-Never automatically remove a stale lock: first establish that its writer has
-exited, inspect the repository and verify relevant graphs, then make an explicit
-recovery decision. Initializers additionally use `.pebble-init.lock` in the empty
+An interrupted writer releases its OS lock and may leave unpublished temps;
+the persistent guard file itself is not evidence of a live owner. Legacy
+`write.lock`/`worktree.lock` markers still fail closed and require inspection, never
+automatic removal. Initializers additionally use `.pebble-init.lock` in the empty
 root and an unpublished staging directory. Failed/incomplete initialization is
 not repaired or reclassified as a new repository; inspect it manually. Do not
 convert a v1 directory by adding the marker.

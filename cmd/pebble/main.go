@@ -38,6 +38,7 @@ Usage:
   pebble branch [name]            List branches or create one at HEAD
   pebble checkout <branch>        Restore a branch (refuses tracked changes)
   pebble restore <file>           Discard edits to one file, restoring HEAD
+  pebble recover                  Resume an interrupted checkout or restore
   pebble push <url> [branch]       Push HEAD to a remote branch (default: current)
   pebble fetch <url> [branch]      Fetch into incoming/<branch> (default: main)
   pebble fsck                     Verify all stored objects and references
@@ -47,7 +48,8 @@ Usage:
 Identity: set PEBBLE_AUTHOR and PEBBLE_EMAIL before committing.
 Remotes: legacy v1 repositories only; format2 sync is not implemented.
 Legacy/unmarked repositories require explicit migration for local commands.
-Checkout is not crash-transactional; keep Git and backups.`)
+Checkout/restore retain durable recovery intent; use pebble recover after interruption.
+Keep Git and backups; process-interruption tests are not power-loss qualification.`)
 }
 func run(args []string, cwd string, w io.Writer) error {
 	if len(args) == 0 {
@@ -65,7 +67,7 @@ func run(args []string, cwd string, w io.Writer) error {
 		return errors.New("pull/merge is not implemented: use pebble fetch <url> [branch], inspect history, then checkout incoming/<branch>; keep Git and backups")
 	}
 	switch cmd {
-	case "init", "status", "log", "branch", "checkout", "commit", "restore", "push", "fetch", "fsck":
+	case "init", "status", "log", "branch", "checkout", "commit", "restore", "recover", "push", "fetch", "fsck":
 	default:
 		return fmt.Errorf("unknown command %q; run pebble help", cmd)
 	}
@@ -212,6 +214,15 @@ func run(args []string, cwd string, w io.Writer) error {
 			return err
 		}
 		fmt.Fprintln(w, "Restored from HEAD:", filepath.ToSlash(rel))
+	case "recover":
+		if len(params) != 0 {
+			return errors.New("usage: pebble recover")
+		}
+		if err := repo.Recover(context.Background()); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(w, "Working-tree recovery complete (or no pending operation)")
+		return err
 	case "fsck":
 		if len(params) != 0 {
 			return errors.New("usage: pebble fsck")

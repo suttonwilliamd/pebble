@@ -72,3 +72,50 @@ func TestCatalogRejectsCaseAndAncestorCollisions(t *testing.T) {
 		}
 	}
 }
+
+func TestHEADPublicationErrorsDoNotAcknowledgeSuccess(t *testing.T) {
+	ctx := context.Background()
+	byName, _ := corpus(t)
+	for _, point := range []string{"file-sync", "close", "before-publish", "namespace-sync", "after-publish"} {
+		t.Run(point, func(t *testing.T) {
+			s, err := InitRepository(ctx, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			putGoldens(t, s, byName, "commit-old")
+			id := goldenID(t, byName["commit-old"])
+			if err = s.UpdateRef(ctx, "heads/main", nil, id); err != nil {
+				t.Fatal(err)
+			}
+			if err = s.UpdateRef(ctx, "heads/topic", nil, id); err != nil {
+				t.Fatal(err)
+			}
+			injected := errors.New("HEAD barrier failure")
+			s.fault = func(stage, path string) error {
+				if stage == point && filepath.Base(path) == "HEAD" {
+					return injected
+				}
+				return nil
+			}
+			if err = s.UpdateHead(ctx, "heads/main", "heads/topic"); !errors.Is(err, injected) {
+				t.Fatalf("HEAD error hidden: %v", err)
+			}
+			s, err = Open(s.root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			head, err := s.Head(ctx)
+			if err != nil || head != "heads/main" && head != "heads/topic" {
+				t.Fatalf("partial HEAD: %s %v", head, err)
+			}
+			assertRef(t, s, head, id)
+			if err = s.UpdateHead(ctx, head, "heads/topic"); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := s.Head(ctx); err != nil || got != "heads/topic" {
+				t.Fatalf("retry HEAD: %s %v", got, err)
+			}
+			assertRef(t, s, "heads/topic", id)
+		})
+	}
+}
