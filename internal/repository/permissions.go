@@ -16,6 +16,11 @@ func (r *Repository) preflightPermissions(stage string, plan *worktreeIntent) er
 		if dir.Remove || dir.Staged {
 			write[filepath.ToSlash(filepath.Dir(dir.Path))] = true
 		}
+		if dir.Remove {
+			// Cross-parent directory rename updates "..", requiring write
+			// access to the directory itself on POSIX, not just its parents.
+			write[dir.Path] = true
+		}
 	}
 	if err := preflightDirectory(r.root, write["."]); err != nil {
 		return fmt.Errorf("working-root durability/permission preflight: %w", err)

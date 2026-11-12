@@ -89,7 +89,7 @@ func TestFilesystemCLI(t *testing.T) {
 	}
 	invoke(true, "restore", "node")
 	assertFile("node", "original CLI file\x00")
-	literal := "./missing/../target"
+	literal := filepath.FromSlash("./missing/../target")
 	linkPath := filepath.Join(root, "literal")
 	if err := os.Symlink(literal, linkPath); err != nil {
 		if os.Getenv("PEBBLE_REQUIRE_LINKS") == "1" {

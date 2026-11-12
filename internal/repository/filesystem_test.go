@@ -267,7 +267,7 @@ func TestFilesystemLiteralSymlinkHistory(t *testing.T) {
 	if err = os.Remove(filepath.Join(r.root, "dangling")); err != nil {
 		t.Fatal(err)
 	}
-	if err = createLink("../different", filepath.Join(r.root, "dangling"), false); err != nil {
+	if err = createLink(filepath.FromSlash("../different"), filepath.Join(r.root, "dangling"), false); err != nil {
 		t.Fatal(err)
 	}
 	committed(t, r, "changed link")

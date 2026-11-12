@@ -78,10 +78,9 @@ func TestFilesystemEmptyDirectoryTransitionAndRestore(t *testing.T) {
 	if err = r.Checkout("empty"); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.Mkdir(filepath.Join(r.root, "node"), 0555); err != nil {
+	if err = os.Mkdir(filepath.Join(r.root, "node"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(r.root, "node"), 0755) })
 	if err = r.Checkout("file"); err != nil {
 		t.Fatalf("safe empty directory to file: %v", err)
 	}

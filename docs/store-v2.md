@@ -46,8 +46,11 @@ An existing empty blocking directory can be retained; empty directories still
 are not standalone snapshot entries. Restore discards only its selected leaf's
 original edits, not later edits or arbitrary directory descendants.
 Before durable intent, needed parent write/search permissions and platform
-barriers are probed through no-follow handles. Unchanged Keep files do not
-require needless parent writes; POSIX original-file write permission is not required.
+barriers are probed through no-follow handles. Retaining a directory across
+parents also requires write access to that directory on POSIX to update `..`.
+An unwritable original directory is refused before intent; the engine never
+chmods it to make retention succeed. Unchanged Keep files do not require needless
+parent writes; POSIX original regular-file write permission is not required.
 
 Native operations resolve each component relative to pinned no-follow directory
 handles. Windows pins ancestors against deletion, renames the opened source
