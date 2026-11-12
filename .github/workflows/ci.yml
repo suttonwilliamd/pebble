@@ -39,8 +39,8 @@ jobs:
           base=61586df728b858f04d39775855a78f230bfeb7a9
           old="$(mktemp -d "${RUNNER_TEMP//\\//}/pebble-pb10-old-XXXXXX")"
           git cat-file -e "$base^{commit}" || git fetch --no-tags origin "$base"
-          git archive --format=tar --output="$old/base.tar" "$base" go.mod go.sum cmd internal
-          tar -xf "$old/base.tar" -C "$old"
+          # GNU tar treats a Windows drive colon in an archive name as remote.
+          git archive --format=tar "$base" go.mod go.sum cmd internal | tar -xf - -C "$old"
           printf '%s\n' "$base" > "$old/BASELINE"
           PEBBLE_TEST_OLD_SOURCE="$old" PEBBLE_REQUIRE_OLD_CONSUMER=1 \
             go test ./internal/repository -run '^TestFilesystemOldConsumers$' -count=1 -timeout=5m -v

@@ -22,6 +22,14 @@ func TestFilesystemLinkDirectoryTransitions(t *testing.T) {
 			if err := r.Checkout("file"); err != nil {
 				t.Fatal(err)
 			}
+			// Commit on the link branch: advancing "file" here would turn the
+			// link-to-file case into a legitimate no-op with no install seam.
+			if err := r.CreateBranch("link"); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Checkout("link"); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.Remove(filepath.Join(r.root, "node")); err != nil {
 				t.Fatal(err)
 			}
@@ -29,9 +37,6 @@ func TestFilesystemLinkDirectoryTransitions(t *testing.T) {
 				t.Fatal(err)
 			}
 			committed(t, r, "link")
-			if err := r.CreateBranch("link"); err != nil {
-				t.Fatal(err)
-			}
 			if step.branch == "link" {
 				if err := r.Checkout("directory"); err != nil {
 					t.Fatal(err)
@@ -57,12 +62,19 @@ func TestFilesystemLinkDirectoryTransitions(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if head, e := r.GetHead(); e != nil || head != "heads/"+step.branch {
+				t.Fatalf("recovery HEAD: %s %v", head, e)
+			}
 			if step.branch == "link" {
 				link, err := readLink(filepath.Join(r.root, "node"))
 				if err != nil || link.target != outside {
 					t.Fatalf("literal restored link: %+v %v", link, err)
 				}
 			} else {
+				info, e := os.Lstat(filepath.Join(r.root, "node"))
+				if e != nil || step.branch == "file" && !info.Mode().IsRegular() || step.branch == "directory" && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+					t.Fatalf("recovered target type %s: %v", step.branch, e)
+				}
 				assertTransition(t, r, step.branch == "directory")
 			}
 			if got, err := os.ReadFile(outside); err != nil || string(got) != "outside unchanged" {
