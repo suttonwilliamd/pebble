@@ -15,6 +15,8 @@ and independent backups while dogfooding.
   paths and corrupt target objects before changing files.
 - Explicit single-file recovery from HEAD with `pebble restore <file>`.
 - Durable checkout/restore journals and explicit `pebble recover` roll-forward.
+- Literal symbolic-link targets/types, observable executable identity, and
+  recoverable file/directory transitions without deleting untracked children.
 - Integrity verification of every stored object/copy and all refs with `pebble fsck`,
   including unreachable loose/packed objects and complete dependency closure.
 - Repository discovery from subdirectories; explicit initialization; writer locks
@@ -38,10 +40,10 @@ and independent backups while dogfooding.
 - Merge/combine CLI, Git import/export, clone, staging, diff, branch deletion.
 - Format2 remote sync and GC. Streaming storage does not yet establish
   large-binary scalability or improvements over Git.
-- Symlinks/special files and empty directories in snapshots. Non-ignored symlinks
-  and special files cause an error rather than being silently lost.
-- Full filesystem metadata preservation: executable bit on Unix is supported;
-  ACLs, arbitrary permission bits, ownership and timestamps are not preserved.
+- Special files and empty directories as standalone snapshot entries.
+- Full filesystem metadata preservation: executable identity and symbolic-link
+  type/target are supported; ACLs, arbitrary permission bits, ownership and
+  timestamps are not preserved. Unsupported materialization fails explicitly.
 
 See [the dogfood evaluation and next priorities](docs/dogfood-readiness.md) and the
 [longer-term roadmap](docs/next-git-roadmap.md). Older design/checklist documents
@@ -106,17 +108,32 @@ pebble fsck
 
 To undo edits or recover a deleted tracked file, run `pebble restore path/to/file`.
 **This explicitly discards that file's uncommitted contents.** It restores HEAD
-without changing history and refuses untracked paths, directories and symlinks.
+without changing history and restores the stored regular-file or link type.
+It does not authorize discarding a nonempty directory or later external edits.
 
 Commits include **all non-ignored files**, additions and deletions; there is no
 staging area. Unchanged commits are rejected. Status uses committed HEAD, not an
 index cache. Untracked files may survive checkout unless they collide with a
-target file, in which case checkout refuses unless contents and executable mode
-are identical (then the existing file is adopted without rewriting).
-File/directory transitions are currently rejected; empty directories left by
-checkout are harmless.
+target leaf, in which case checkout refuses unless literal bytes and observable
+type/mode are identical (then the existing identity is adopted without rewriting).
+File/directory transitions retain original leaves and verified empty blocking
+directories in the journal; untracked children, including empty subdirectories,
+are refused rather than recursively removed.
 Create the first commit before creating another branch. `log` follows all ordered
 parents (first-parent first), displaying each reachable commit once.
+
+New repositories carry a `filesystem-v1` capability marker. Existing format2
+repositories remain readable and support regular/executable history without
+automatic upgrade. To deliberately permit link entries, back up the repository
+and run `pebble enable-filesystem`. This changes only the durable capability
+marker, not objects, IDs, refs or working bytes. It excludes incompatible older
+writers and refuses active cooperating writers or pending recovery. This protocol
+coordinates PB-09's persistent guards, not arbitrary third-party/older lock
+protocols. The marker does not grant Windows link privileges or executable-bit
+support: an incapable host refuses checkout/restore before working mutation.
+Link target bytes are never dereferenced or normalized. Windows captures the
+authoritative substitute target/flags, not its display label. Ambiguous cross-host
+target spellings fail explicitly; see the [target contract](docs/contracts/v2.md#3-trees-commits-and-tags).
 
 ### Explicit legacy v1 migration
 
@@ -172,19 +189,24 @@ Review `pebble status` for secrets before committing; `.gitignore` is not read.
 - Pending `.pebble/worktree-journal` blocks commit, branch, checkout, restore and
   status. Target bytes and intent are durable before working paths change.
   Replaced/removed originals (including restore's discarded edits) stay in
-  `old-*` slots until completion. Do not edit/delete recovery files.
+  `old-*` slots until completion; blocking directories use `old-dir-*` slots.
+  Do not edit/delete recovery files.
 - Recovery checks recorded filesystem identities, bytes, modes and directory
   spellings. Later edits, replacements (even identical bytes), untracked collisions,
   aliases, changed branches, missing/corrupt/unsupported intent or barrier errors
   fail closed. Preserve the journal and files for inspection; do not force recovery.
+  POSIX cannot atomically predicate rename on a source inode. A detected final
+  rename-window substitution is reversed without replacement where possible;
+  intervening entries/permissions can block reversal. The error then identifies
+  preserved public/retained versions for operator recovery; HEAD is not advanced.
 - New persistent `.pebble/worktree.guard` and `write.guard` use OS process locks,
   released on exit. Never unlink guard files. Legacy `worktree.lock`/`write.lock`
   markers still require manual inspection and confirmation no old writer is live.
   Interrupted initialization also needs manual inspection, not retry/reset.
 - Successful completion means files and symbolic HEAD have passed platform
   durability barriers. V2 has no mutable staging index: status derives from HEAD.
-  Process-kill tests are not hardware power-loss qualification. File/directory
-  transitions, symlinks and arbitrary concurrent filesystem mutation remain unsupported.
+  Process-kill tests are not hardware power-loss qualification. Concurrent editors
+  remain unsupported: detected ownership/byte changes stop recovery, never force it.
 
 ## Remote test service
 

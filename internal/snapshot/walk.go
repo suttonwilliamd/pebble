@@ -22,7 +22,7 @@ func WalkFiles(root string, visit func(string, os.FileInfo) error) error {
 		if p == root {
 			return nil
 		}
-		if generator.shouldIgnore(p, info.IsDir()) {
+		if generator.ShouldIgnore(p, info.IsDir()) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}

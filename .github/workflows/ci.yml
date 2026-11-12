@@ -33,6 +33,26 @@ jobs:
         run: go build ./...
       - name: Vet
         run: go vet ./...
+      - name: Actual PB09 writer and recovery compatibility
+        shell: bash
+        run: |
+          base=61586df728b858f04d39775855a78f230bfeb7a9
+          old="$(mktemp -d "${RUNNER_TEMP//\\//}/pebble-pb10-old-XXXXXX")"
+          git cat-file -e "$base^{commit}" || git fetch --no-tags origin "$base"
+          git archive --format=tar --output="$old/base.tar" "$base" go.mod go.sum cmd internal
+          tar -xf "$old/base.tar" -C "$old"
+          printf '%s\n' "$base" > "$old/BASELINE"
+          PEBBLE_TEST_OLD_SOURCE="$old" PEBBLE_REQUIRE_OLD_CONSUMER=1 \
+            go test ./internal/repository -run '^TestFilesystemOldConsumers$' -count=1 -timeout=5m -v
+      - name: Native literal links and metadata history
+        if: runner.os != 'Windows'
+        run: |
+          PEBBLE_REQUIRE_LINKS=1 go test ./internal/repository ./cmd/pebble -run '^TestFilesystem(LiteralSymlinkHistory|DirectoryHintHistory|ExecutableMetadataHistory|POSIXLiteralBytes|POSIXAmbiguousCapture|LinkDirectoryTransitions|LinkRestoreRecoveryPreservesLaterEdit|MutationRaces|ReadParentRace|CLI)$' -count=1 -timeout=5m -v
+      - name: Native Windows target parsing and capability refusal
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          PEBBLE_REQUIRE_JUNCTION=1 go test ./internal/repository ./cmd/pebble -run '^TestFilesystem(WindowsTargetDecoding|WindowsTargetNativeRoundtrip|RejectsJunctionRecovery|UnsupportedTargetInterpretation|LiteralSymlinkHistory|CLI)$' -count=1 -timeout=5m -v
       - name: Filesystem normalization alias regression
         if: startsWith(matrix.os, 'macos')
         run: go test ./internal/repository -run 'TestCheckout.*Normalization' -count=1 -v
@@ -40,9 +60,9 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           id
-          PEBBLE_REQUIRE_UNPRIVILEGED=1 go test ./internal/repository -run '^TestReadOnlyOriginalCheckoutAndRestore$' -count=1 -v
+          PEBBLE_REQUIRE_UNPRIVILEGED=1 go test ./internal/repository -run '^(TestReadOnlyOriginalCheckoutAndRestore|TestFilesystemPermissionFailures|TestFilesystemNativeRenameAmbiguity)$' -count=1 -timeout=5m -v
       - name: Test
-        run: go test ./... -count=1
+        run: go test ./... -count=1 -timeout=12m
       - name: Race detection
         if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
         run: go test -race ./...

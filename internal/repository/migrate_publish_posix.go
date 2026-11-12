@@ -4,14 +4,18 @@ package repository
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 
 	"github.com/suttonwilliamd/pebble/internal/storev2"
 )
 
-func syncMigrationDirectory(path string) error {
-	f, err := os.Open(path)
+func syncMigrationDirectory(path string) (err error) {
+	a, err := anchorPath(path, false)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, a.close()) }()
+	f, err := a.openDirectory()
 	if err != nil {
 		return err
 	}

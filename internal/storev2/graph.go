@@ -95,7 +95,25 @@ func (g *graph) verify(root ID) error {
 }
 
 func (g *graph) semantic(id ID, n *node) error {
+	if n.symlinks {
+		if err := g.store.requireFilesystem(); err != nil {
+			return err
+		}
+	}
 	switch n.kind {
+	case Tree:
+		for _, entry := range n.edges {
+			if entry.mode < 2 {
+				continue
+			}
+			manifest := g.nodes[entry.id]
+			if manifest.total == 0 || manifest.total > 65535 {
+				return corrupt(id, invalid("link-target"))
+			}
+			if err := g.store.copyManifest(g.ctx, entry.id, manifest, linkTargetWriter{}, g.buffer, &g.readBudget, g.nodes); err != nil {
+				return corrupt(id, err)
+			}
+		}
 	case ManifestPage:
 		for _, e := range n.edges {
 			if g.nodes[e.id].size != e.length {

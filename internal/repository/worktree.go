@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -16,10 +17,12 @@ import (
 )
 
 type workingFile struct {
-	name       string
-	executable bool
-	size       uint64
-	sum        [32]byte
+	name                   string
+	executable             bool
+	symlink, directoryLink bool
+	size                   uint64
+	sum                    [32]byte
+	info                   os.FileInfo
 }
 
 func (r *Repository) readFile(name string, consume func(*os.File) error) (err error) {
@@ -34,7 +37,15 @@ func (r *Repository) readFile(name string, consume func(*os.File) error) (err er
 	if !before.Mode().IsRegular() {
 		return fmt.Errorf("not a regular file: %s", name)
 	}
-	f, err := os.Open(p)
+	if err = r.boundary(context.Background(), "read-open", name); err != nil {
+		return err
+	}
+	anchor, err := anchorPath(p, false)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, anchor.close()) }()
+	f, err := anchor.openRead()
 	if err != nil {
 		return err
 	}
@@ -60,13 +71,43 @@ func (r *Repository) readFile(name string, consume func(*os.File) error) (err er
 }
 func (r *Repository) hashFile(name string) (workingFile, error) {
 	result := workingFile{name: name}
-	err := r.readFile(name, func(f *os.File) error {
+	p, err := r.safePath(name)
+	if err != nil {
+		return result, err
+	}
+	before, err := os.Lstat(p)
+	if err != nil {
+		return result, err
+	}
+	result.info = before
+	if before.Mode()&os.ModeSymlink != 0 {
+		if err = r.boundary(context.Background(), "read-link", name); err != nil {
+			return result, err
+		}
+		link, err := readLink(p)
+		if err != nil {
+			return result, err
+		}
+		after, err := os.Lstat(p)
+		if err != nil {
+			return result, err
+		}
+		if !os.SameFile(before, after) || before.ModTime() != after.ModTime() || before.Mode() != after.Mode() {
+			return result, fmt.Errorf("symbolic link changed while reading: %s", name)
+		}
+		result.symlink, result.directoryLink = true, link.directory
+		result.size, result.sum = uint64(len(link.target)), sha256.Sum256([]byte(link.target))
+		return result, nil
+	}
+	err = r.readFile(name, func(f *os.File) error {
 		info, err := f.Stat()
 		if err != nil {
 			return err
 		}
-		h := sha256.New()
-		n, err := io.Copy(h, f)
+		if !os.SameFile(before, info) {
+			return fmt.Errorf("file identity changed while hashing: %s", name)
+		}
+		n, sum, err := hashWorkingReader(f)
 		if err != nil {
 			return err
 		}
@@ -75,31 +116,75 @@ func (r *Repository) hashFile(name string) (workingFile, error) {
 		}
 		result.size = uint64(n)
 		result.executable = info.Mode()&0111 != 0
-		h.Sum(result.sum[:0])
+		result.sum = sum
 		return nil
 	})
 	return result, err
 }
 func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
-	names := map[string]bool{}
-	if err := snapshot.WalkFiles(r.root, func(name string, _ os.FileInfo) error {
-		if err := validPath(name); err != nil {
-			return err
-		}
-		names[name] = true
-		return nil
-	}); err != nil {
+	var ignoreData []byte
+	err := r.readFile(".pebbleignore", func(f *os.File) error { var e error; ignoreData, e = io.ReadAll(f); return e })
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
+	patterns, err := snapshot.ParseIgnore(ignoreData)
+	if err != nil {
+		return nil, err
+	}
+	ignore := snapshot.NewFileIndexGenerator(r.root, patterns)
+	names := map[string]bool{}
+	var walk func(string) error
+	walk = func(dir string) error {
+		children, err := readDirectory(dir)
+		if err != nil {
+			return err
+		}
+		for _, child := range children {
+			p := filepath.Join(dir, child.Name())
+			isDirectory := child.IsDir() && child.Type()&os.ModeSymlink == 0
+			if ignore.ShouldIgnore(p, isDirectory) {
+				continue
+			}
+			relative, err := filepath.Rel(r.root, p)
+			if err != nil {
+				return err
+			}
+			name := filepath.ToSlash(relative)
+			if err = validPath(name); err != nil {
+				return err
+			}
+			if isDirectory {
+				if err = walk(p); err != nil {
+					return err
+				}
+			} else {
+				names[name] = true
+			}
+		}
+		return nil
+	}
+	if err = walk(r.root); err != nil {
+		return nil, err
+	}
+	previous := map[string]storev2.TreeEntry{}
 	for _, e := range old {
+		previous[e.Path] = e
 		p, err := r.safePath(e.Path)
+		if errors.Is(err, errPathBlocked) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
-		if _, err = os.Lstat(p); os.IsNotExist(err) {
+		info, err := os.Lstat(p)
+		if os.IsNotExist(err) {
 			continue
-		} else if err != nil {
+		}
+		if err != nil {
 			return nil, err
+		}
+		if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			continue
 		}
 		names[e.Path] = true
 	}
@@ -109,6 +194,14 @@ func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
 		f, err := r.hashFile(name)
 		if err != nil {
 			return nil, err
+		}
+		if e, ok := previous[name]; ok {
+			if !measuresExecutable && !f.symlink && !e.Symlink {
+				f.executable = e.Executable
+			}
+			if !measuresDirectoryLink && f.symlink && e.Symlink {
+				f.directoryLink = e.DirectoryLink
+			}
 		}
 		out = append(out, f)
 		entries = append(entries, storev2.TreeEntry{Path: name})
@@ -134,7 +227,7 @@ func (r *Repository) changes(old []storev2.TreeEntry, files []workingFile) ([]Ch
 			if err != nil {
 				return nil, err
 			}
-			if size != f.size || sum != f.sum || e.Executable != f.executable {
+			if size != f.size || sum != f.sum || e.Executable != f.executable || e.Symlink != f.symlink || e.DirectoryLink != f.directoryLink {
 				changes = append(changes, Change{"M", f.name})
 			}
 		}
@@ -191,20 +284,58 @@ func (r *Repository) Commit(message, author, email string) (_ storev2.ID, err er
 		return storev2.ID{}, fmt.Errorf("nothing to commit; working tree clean")
 	}
 	ctx := context.Background()
+	for _, file := range files {
+		if !file.symlink {
+			continue
+		}
+		enabled, e := r.store.FilesystemEnabled()
+		if e != nil {
+			return storev2.ID{}, e
+		}
+		if !enabled {
+			return storev2.ID{}, fmt.Errorf("symbolic links require explicit pebble enable-filesystem")
+		}
+		break
+	}
 	entries := make([]storev2.TreeEntry, 0, len(files))
 	for _, file := range files {
 		var id storev2.ID
-		err = r.readFile(file.name, func(f *os.File) error {
-			info, e := f.Stat()
+		if file.symlink {
+			p, e := r.safePath(file.name)
 			if e != nil {
+				return storev2.ID{}, e
+			}
+			link, e := readLink(p)
+			if e != nil {
+				return storev2.ID{}, e
+			}
+			info, e := os.Lstat(p)
+			if e != nil {
+				return storev2.ID{}, e
+			}
+			if !sameWorkingInfo(file.info, info) {
+				return storev2.ID{}, fmt.Errorf("link identity changed while committing: %s", file.name)
+			}
+			if measuresDirectoryLink && link.directory != file.directoryLink {
+				return storev2.ID{}, fmt.Errorf("link type changed while committing: %s", file.name)
+			}
+			id, err = r.store.IngestFile(ctx, strings.NewReader(link.target), nil)
+		} else {
+			err = r.readFile(file.name, func(f *os.File) error {
+				info, e := f.Stat()
+				if e != nil {
+					return e
+				}
+				if !sameWorkingInfo(file.info, info) {
+					return fmt.Errorf("file identity changed while committing: %s", file.name)
+				}
+				if measuresExecutable && (info.Mode()&0111 != 0) != file.executable {
+					return fmt.Errorf("mode changed while committing: %s", file.name)
+				}
+				id, e = r.store.IngestFile(ctx, f, nil)
 				return e
-			}
-			if (info.Mode()&0111 != 0) != file.executable {
-				return fmt.Errorf("mode changed while committing: %s", file.name)
-			}
-			id, e = r.store.IngestFile(ctx, f, nil)
-			return e
-		})
+			})
+		}
 		if err != nil {
 			return storev2.ID{}, err
 		}
@@ -215,7 +346,7 @@ func (r *Repository) Commit(message, author, email string) (_ storev2.ID, err er
 		if size != file.size || sum != file.sum {
 			return storev2.ID{}, fmt.Errorf("file changed while committing: %s", file.name)
 		}
-		entries = append(entries, storev2.TreeEntry{Path: file.name, Executable: file.executable, Manifest: id})
+		entries = append(entries, storev2.TreeEntry{Path: file.name, Executable: file.executable, Symlink: file.symlink, DirectoryLink: file.directoryLink, Manifest: id})
 	}
 	tree, err := r.store.CreateTree(ctx, entries)
 	if err != nil {
@@ -231,6 +362,22 @@ func (r *Repository) Commit(message, author, email string) (_ storev2.ID, err er
 	id, err := r.store.CreateCommit(ctx, c)
 	if err != nil {
 		return storev2.ID{}, err
+	}
+	if err = r.boundary(ctx, "commit-publish", head); err != nil {
+		return storev2.ID{}, err
+	}
+	for _, file := range files {
+		p, e := r.safePath(file.name)
+		if e != nil {
+			return storev2.ID{}, e
+		}
+		info, e := os.Lstat(p)
+		if e != nil {
+			return storev2.ID{}, e
+		}
+		if !sameWorkingInfo(file.info, info) {
+			return storev2.ID{}, fmt.Errorf("file ownership changed before commit publication: %s", file.name)
+		}
 	}
 	if err = r.store.UpdateRef(ctx, head, expected, id); err != nil {
 		return storev2.ID{}, err

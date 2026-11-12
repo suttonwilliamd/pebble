@@ -23,6 +23,12 @@ func syncMigrationFiles(root string) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if _, err = readLink(path); err != nil {
+				return err
+			}
+			return syncOriginal(path)
+		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("nonregular migration stage file: %s", path)
 		}

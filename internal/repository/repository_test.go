@@ -189,13 +189,15 @@ func TestStageDiscardsLateChecksumFailure(t *testing.T) {
 	if err = r.store.Put(context.Background(), bad, bytes.NewReader(append(header[:], payload...))); err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
-	if _, err = r.stageFile(dir, storev2.TreeEntry{Path: "asset.bin", Manifest: bad}); err == nil {
-		t.Fatal("bad checksum accepted")
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("provisional output retained: %v %v", entries, err)
+	for _, symlink := range []bool{false, true} {
+		dir := t.TempDir()
+		if _, err = r.stageFile(dir, storev2.TreeEntry{Path: "asset.bin", Symlink: symlink, Manifest: bad}); err == nil {
+			t.Fatal("bad checksum accepted")
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("provisional output retained: %v %v", entries, err)
+		}
 	}
 	if _, err = r.Verify(); err == nil {
 		t.Fatal("fsck ignored an unreachable manifest with an invalid raw checksum")

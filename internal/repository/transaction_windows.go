@@ -4,19 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/windows"
 )
 
-func syncOriginal(path string) error {
-	// Windows FlushFileBuffers requires write access; do not weaken the barrier.
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+func syncOriginal(path string) (err error) {
+	a, err := anchorPath(path, false)
 	if err != nil {
 		return err
 	}
-	return errors.Join(f.Sync(), f.Close())
+	defer func() { err = errors.Join(err, a.close()) }()
+	h, err := relativeHandle(a.parent, a.leaf, windows.GENERIC_READ|windows.GENERIC_WRITE|windows.SYNCHRONIZE, windows.FILE_SHARE_READ, 0)
+	if err != nil {
+		return err
+	}
+	return errors.Join(windows.FlushFileBuffers(h), windows.CloseHandle(h))
 }
 
 func filesystemIdentity(path string) (string, error) {
@@ -34,43 +37,36 @@ func filesystemIdentity(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		return "", fmt.Errorf("reparse point: %s", path)
-	}
 	return fmt.Sprintf("%x:%x:%x", info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow), nil
-}
-func moveWorktree(source, target string, barrier func() error) error {
-	from, err := windows.UTF16PtrFromString(`\\?\` + source)
-	if err != nil {
-		return err
-	}
-	to, err := windows.UTF16PtrFromString(`\\?\` + target)
-	if err != nil {
-		return err
-	}
-	if err := barrier(); err != nil {
-		return err
-	}
-	return windows.MoveFileEx(from, to, windows.MOVEFILE_WRITE_THROUGH)
 }
 
 func settleWorktree(ctx context.Context, r *Repository, stage string, plan *worktreeIntent) error {
-	// Re-establish installed-file namespace barriers on retry by moving the same
-	// identity through its recorded stage slot. Either interruption state remains
-	// representable; no replacement, copy/delete fallback or directory Sync no-op.
-	for i, file := range plan.Files {
-		if file.Keep || file.Target == nil {
+	for _, file := range plan.Files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if file.Target == nil {
 			continue
 		}
 		path, err := r.safePath(file.Path)
 		if err != nil {
 			return err
 		}
-		temporary := filepath.Join(stage, stageName(i))
-		if err = r.transactionMove(ctx, "stabilize-stage", path, temporary); err != nil {
+		if err = syncOriginal(path); err != nil {
 			return err
 		}
-		if err = r.transactionMove(ctx, "stabilize-install", temporary, path); err != nil {
+	}
+	for i, dir := range plan.Directories {
+		path := filepath.Join(r.root, filepath.FromSlash(dir.Path))
+		if dir.Remove {
+			path = filepath.Join(stage, retainedDirectoryName(i))
+		}
+		if err := syncOriginal(path); err != nil {
+			return err
+		}
+	}
+	for _, path := range []string{r.root, stage, filepath.Dir(stage)} {
+		if err := syncOriginal(path); err != nil {
 			return err
 		}
 	}

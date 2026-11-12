@@ -163,7 +163,7 @@ func TestCheckoutRecoveryEveryFaultBoundary(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			after := pending || stage == "complete-published" || stage == "complete-barrier" && runtime.GOOS != "windows"
+			after := pending || strings.HasPrefix(stage, "complete")
 			assertRecoveryState(t, f, after)
 		})
 	}
@@ -248,7 +248,7 @@ func TestCheckoutRecoveryEveryProcessBoundary(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			after := pending || stage == "complete-published" || stage == "complete-barrier" && runtime.GOOS != "windows"
+			after := pending || strings.HasPrefix(stage, "complete")
 			assertRecoveryState(t, f, after)
 		})
 	}
@@ -462,7 +462,7 @@ func TestRecoveryRejectsCorruptOrIncompleteJournal(t *testing.T) {
 			case "checksum":
 				data = bytes.Replace(data, []byte(`"SHA256":"`), []byte(`"SHA256":"bad`), 1)
 			case "unsupported":
-				data = bytes.Replace(data, []byte(`"Version":1`), []byte(`"Version":2`), 1)
+				data = bytes.Replace(data, []byte(`"Version":2`), []byte(`"Version":0`), 1)
 			case "missing-intent":
 				err = os.Remove(path)
 			case "missing-stage":
@@ -724,7 +724,7 @@ func TestRestoreRecoveryEveryBoundary(t *testing.T) {
 						t.Fatalf("restore fault hidden: %v", err)
 					}
 				}
-				applied := journalExists(t, f.r) || stage == "complete-published" || stage == "complete-barrier" && runtime.GOOS != "windows"
+				applied := journalExists(t, f.r) || strings.HasPrefix(stage, "complete")
 				reopenRecovery(t, &f)
 				for i := 0; i < 2; i++ {
 					if err := f.r.Recover(context.Background()); err != nil {
@@ -754,7 +754,9 @@ func TestRestoreRecoveryEveryBoundary(t *testing.T) {
 
 func TestRecoveryCanBeInterruptedRepeatedly(t *testing.T) {
 	f := pauseCheckout(t, "journal-published")
-	for _, stage := range []string{"directory-published", "retain-published", "install-published", "head-published", "complete-published"} {
+	// Each resume advances to a later durable phase; retention now precedes
+	// directory installation rather than being interleaved with leaf installs.
+	for _, stage := range []string{"retain-published", "directory-published", "install-published", "head-published", "complete-published"} {
 		interruptWorktree(t, f.r.root, "PEBBLE_TEST_WORKTREE_RECOVER=1", "PEBBLE_TEST_WORKTREE_STAGE="+stage)
 		reopenRecovery(t, &f)
 	}

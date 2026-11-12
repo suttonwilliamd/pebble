@@ -27,7 +27,7 @@ type Ref struct {
 }
 
 func Init(path string) (*Repository, error) {
-	root, err := filepath.Abs(path)
+	root, err := workingRoot(path)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +38,7 @@ func Init(path string) (*Repository, error) {
 	return &Repository{root: root, store: s}, nil
 }
 func Open(path string) (*Repository, error) {
-	root, err := filepath.Abs(path)
+	root, err := workingRoot(path)
 	if err != nil {
 		return nil, err
 	}

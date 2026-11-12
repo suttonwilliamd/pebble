@@ -21,14 +21,19 @@ func NewFileIndexGenerator(root string, patterns []string) *FileIndexGenerator {
 // ReadIgnore supports comments, blank lines, globs, root-relative paths and directory rules.
 // Negation and ** are rejected instead of silently misinterpreted.
 func ReadIgnore(root string) ([]string, error) {
-	patterns := []string{".pebble/", ".git/"}
 	data, err := os.ReadFile(filepath.Join(root, ".pebbleignore"))
 	if os.IsNotExist(err) {
-		return patterns, nil
+		return ParseIgnore(nil)
 	}
 	if err != nil {
 		return nil, err
 	}
+	return ParseIgnore(data)
+}
+
+// ParseIgnore preserves the existing grammar for callers with guarded I/O.
+func ParseIgnore(data []byte) ([]string, error) {
+	patterns := []string{".pebble/", ".git/"}
 	for n, line := range strings.Split(string(data), "\n") {
 		p := strings.TrimSpace(line)
 		if p == "" || strings.HasPrefix(p, "#") {
@@ -44,7 +49,9 @@ func ReadIgnore(root string) ([]string, error) {
 	}
 	return patterns, nil
 }
-func (f *FileIndexGenerator) shouldIgnore(file string, isDir bool) bool {
+
+// ShouldIgnore applies the existing Pebble ignore grammar to an absolute path.
+func (f *FileIndexGenerator) ShouldIgnore(file string, isDir bool) bool {
 	rel, err := filepath.Rel(f.rootPath, file)
 	if err != nil {
 		return true
@@ -83,7 +90,7 @@ func (f *FileIndexGenerator) GenerateIndex() (*Index, error) {
 		if file == f.rootPath {
 			return nil
 		}
-		if f.shouldIgnore(file, info.IsDir()) {
+		if f.ShouldIgnore(file, info.IsDir()) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}

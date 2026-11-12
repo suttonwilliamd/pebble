@@ -130,6 +130,7 @@ type record struct {
 	total              uint64
 	checksum           [32]byte
 	names              []string
+	modes              []byte
 	name               string
 	formats, protocols []uint16
 	features           []string
@@ -243,7 +244,9 @@ func decode(wire []byte) *record {
 			}
 			seen[p] = true
 			r.names = append(r.names, p)
-			check(c.u8() <= 1, "mode")
+			mode := c.u8()
+			check(mode <= 3, "mode")
+			r.modes = append(r.modes, mode)
 			r.links = append(r.links, c.ref(3))
 		}
 	case 5:
@@ -315,6 +318,22 @@ func verifyGraph(root *record, objects map[link]*record) {
 				writePage(h, page, objects)
 			}
 			check(bytes.Equal(h.Sum(nil), r.checksum[:]), "checksum")
+		}
+		if r.kind == 4 {
+			for i, l := range r.links {
+				if r.modes[i] < 2 {
+					continue
+				}
+				manifest := objects[l]
+				check(manifest.total > 0 && manifest.total <= 65535, "link-target")
+				var target bytes.Buffer
+				for _, pageID := range manifest.links {
+					for _, chunkID := range objects[pageID].links {
+						target.Write(objects[chunkID].payload)
+					}
+				}
+				check(bytes.IndexByte(target.Bytes(), 0) < 0, "link-target")
+			}
 		}
 		if r.kind == 0x82 && strings.HasPrefix(r.name, "tags/") {
 			target := objects[r.links[0]]
@@ -393,7 +412,7 @@ func TestV2GoldenContract(t *testing.T) {
 			b := wire(v)
 			got := outcome(func() {
 				if v.Family == "marker" {
-					check(bytes.Equal(b, []byte("pebble-format 2\n")), "version")
+					check(bytes.Equal(b, []byte("pebble-format 2\n")) || bytes.Equal(b, []byte("pebble-format 2\nrequires filesystem-v1\n")), "version")
 					return
 				}
 				r := decode(b)

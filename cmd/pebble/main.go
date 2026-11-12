@@ -39,6 +39,7 @@ Usage:
   pebble checkout <branch>        Restore a branch (refuses tracked changes)
   pebble restore <file>           Discard edits to one file, restoring HEAD
   pebble recover                  Resume an interrupted checkout or restore
+  pebble enable-filesystem        Explicitly enable literal-link tree entries
   pebble push <url> [branch]       Push HEAD to a remote branch (default: current)
   pebble fetch <url> [branch]      Fetch into incoming/<branch> (default: main)
   pebble fsck                     Verify all stored objects and references
@@ -67,10 +68,16 @@ func run(args []string, cwd string, w io.Writer) error {
 		return errors.New("pull/merge is not implemented: use pebble fetch <url> [branch], inspect history, then checkout incoming/<branch>; keep Git and backups")
 	}
 	switch cmd {
-	case "init", "status", "log", "branch", "checkout", "commit", "restore", "recover", "push", "fetch", "fsck":
+	case "init", "status", "log", "branch", "checkout", "commit", "restore", "recover", "enable-filesystem", "push", "fetch", "fsck":
 	default:
 		return fmt.Errorf("unknown command %q; run pebble help", cmd)
 	}
+	// Resolve only the initial working directory, never stored tree components.
+	physical, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return err
+	}
+	cwd = physical
 	if cmd == "init" {
 		if len(params) != 0 {
 			return errors.New("usage: pebble init")
@@ -108,6 +115,14 @@ func run(args []string, cwd string, w io.Writer) error {
 		return err
 	}
 	switch cmd {
+	case "enable-filesystem":
+		if len(params) != 0 {
+			return errors.New("usage: pebble enable-filesystem")
+		}
+		if err := repo.EnableFilesystem(context.Background()); err != nil {
+			return err
+		}
+		fmt.Fprintln(w, "Filesystem capability enabled; incompatible older writers must not use this repository")
 	case "commit":
 		if len(params) > 0 && params[0] == "-m" {
 			params = params[1:]

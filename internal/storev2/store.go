@@ -150,7 +150,7 @@ func Init(ctx context.Context, root string) (_ *Store, err error) {
 			return nil, storageError("initialize "+name, err)
 		}
 	}
-	if err = s.writeFile(ctx, filepath.Join(stage, "format"), []byte(formatMarker)); err != nil {
+	if err = s.writeFile(ctx, filepath.Join(stage, "format"), []byte(filesystemMarker)); err != nil {
 		return nil, err
 	}
 	if err = ctx.Err(); err != nil {
@@ -175,18 +175,11 @@ func (s *Store) guard() error {
 			return pe.Wrap(pe.ErrCodeNotInitialized, "v2 repository", errors.Join(ErrFormat, err))
 		}
 	}
-	f, err := regular(filepath.Join(s.meta, "format"))
-	if err != nil {
-		return pe.Wrap(pe.ErrCodeNotInitialized, "v2 marker required; no implicit v1 migration", errors.Join(ErrFormat, err))
-	}
-	var marker [len(formatMarker) + 1]byte
-	n, readErr := io.ReadFull(f, marker[:])
-	closeErr := f.Close()
-	if readErr != io.ErrUnexpectedEOF || n != len(formatMarker) || string(marker[:n]) != formatMarker || closeErr != nil {
-		return pe.Wrap(pe.ErrCodeNotInitialized, "v2 marker", errors.Join(ErrFormat, closeErr))
+	if _, err := s.marker(); err != nil {
+		return pe.Wrap(pe.ErrCodeNotInitialized, "v2 marker required; no implicit migration", errors.Join(ErrFormat, err))
 	}
 	for _, name := range []string{"objects", "refs"} {
-		if err = directory(filepath.Join(s.meta, name)); err != nil {
+		if err := directory(filepath.Join(s.meta, name)); err != nil {
 			return pe.Wrap(pe.ErrCodeNotInitialized, "v2 "+name, errors.Join(ErrFormat, err))
 		}
 	}
@@ -415,8 +408,14 @@ func (s *Store) Put(ctx context.Context, id ID, source io.Reader) (err error) {
 		return storageError("stage object", err)
 	}
 	defer func() { f.Close(); os.Remove(f.Name()) }()
-	if _, err = inspect(ctx, id, source, f, nil, buffer[:], nil); err != nil {
+	n, err := inspect(ctx, id, source, f, nil, buffer[:], nil)
+	if err != nil {
 		return corrupt(id, err)
+	}
+	if n.symlinks {
+		if err = s.requireFilesystem(); err != nil {
+			return err
+		}
 	}
 	// Even an identical retry is republished after verifying existing bytes.
 	// This establishes a fresh namespace barrier after an uncertain earlier I/O.
