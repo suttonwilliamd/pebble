@@ -1,10 +1,10 @@
-# PB-03 store and PB-04 immutable manifests
+# PB-03 store, PB-04 immutable manifests and PB-05 streaming ingestion
 
 `internal/storev2` implements the [frozen format-2 object contract](contracts/v2.md)
 as a production library: PB-03 adds the typed durable object/ref store; PB-04 adds
-immutable paged file construction and verified raw-byte reads. **The CLI and
-`/v1/` service still use v1.** There is no migration, chunk-boundary policy, CDC
-ingestion, checkout, tag command, new server route, pack, GC or Git importer.
+immutable paged file construction and verified raw-byte reads; PB-05 adds bounded
+content-defined ingestion. **The CLI and `/v1/` service still use v1.** There is
+no migration, checkout, tag command, new server route, pack, GC or Git importer.
 Use separate disposable directories; never point an old CLI at a v2 directory.
 
 ## API and validation boundary
@@ -24,6 +24,7 @@ cannot interrupt an arbitrary blocking caller-supplied reader or kernel flush.
 | `Copy(ctx, id, destinationWriter)` | Streams a canonical envelope, checking schema/address. Output is provisional until nil error: discard it on any failure. |
 | `Verify(ctx, rootID)` | Verifies complete closure, every object address/type, every parent/tag target, page partitioning, chunk/page/file lengths and reconstructed raw whole-file SHA-256. |
 | `CreateManifest(ctx, nextChunkRef)` | Consumes ordered references to already-stored chunks, checks their actual bytes/lengths, derives the raw file SHA-256, and publishes canonical immutable pages and root. No pathname/ref is changed. |
+| `IngestFile(ctx, rawReader, policy)` | Streams arbitrary bytes through ROCK content-defined boundaries into typed chunks and `CreateManifest`. Nil policy selects ROCK defaults; returns one immutable manifest ID, never a pathname/ref update. |
 | `CopyFile(ctx, manifestID, destinationWriter)` | Streams raw file bytes, validating all typed addresses, page partitioning, exact lengths and whole-file checksum. Output is provisional until nil error; discard on failure. Nil destination verifies without retaining output. |
 | `UpdateRef(ctx, name, expectedIDPointer, targetID)` | Nil expected = absent; exact CAS + fast-forward branches, create-only tags, graph verification, collision checks and atomic durable publication under the writer lock. Identical retries also reverify and establish a fresh durability barrier. |
 | `GetRef(ctx, name)` | Returns a target only after validating ref metadata and complete graph, including annotated tag name binding. Missing refs wrap the existing `REF_NOT_FOUND` category and `os.ErrNotExist`. |
@@ -195,6 +196,115 @@ maximum-size chunk case streams 16 MiB to a byte-checking bounded sink. This is
 not large-binary qualification, full 16,384-page capacity traversal, power-loss
 evidence or CLI availability.
 
+## PB-05: bounded content-defined ingestion
+
+`IngestFile(ctx, source, policy)` composes ROCK's pull-based `ChunkReader`,
+existing typed chunk publication, `ChunkRef` and `CreateManifest`. Pass nil for
+the default policy, or a `*rock.FastCDC` configuration. Invalid sizes and maximum
+chunks above the canonical 8 MiB bound are rejected before buffer allocation.
+The stream snapshots the configuration; later caller changes cannot alter its
+boundaries. Input bytes are never filtered by filename, extension, text/binary
+classification or compression. PNG/JPEG/gzip/ZIP and incompressible bytes use the
+same path, without decompression, normalization or a new storage encoding.
+
+### Boundary policy and buffer ownership
+
+This preserves the repository's existing ROCK `FastCDC` policy, not a new format
+or a claim of interoperability with another FastCDC implementation:
+
+- Defaults: minimum 512 bytes, maximum 8,192 bytes, rolling window 48 bytes,
+  polynomial prime 2,083,806,171, mask `0x3fff`, target `0x1000`.
+- Starting at the window size, update the 32-bit rolling hash with each candidate
+  byte. At positions at least the minimum, a matching masked hash cuts **before**
+  that candidate byte.
+- At positions at least `min + (max-min)/2`, also look ahead up to 64 positions
+  (before the maximum) for a zero followed by nonzero; cut immediately after the
+  zero. If neither rule matches, cut at the maximum or the remaining EOF bytes.
+- The final chunk may be shorter than the minimum. No empty chunk is emitted.
+
+`NewChunkReader` fills one `max+1` byte buffer before deciding a boundary, unless
+EOF arrives first. The extra byte supplies the zero/nonzero lookahead at the
+maximum. Consequently short reads, one-byte reads and data-plus-EOF cannot change
+boundaries for identical bytes/configuration. Batch, callback and pull APIs use
+one shared boundary implementation. `Next()` returns a borrowed slice valid only
+until the next `Next()` call. Ingestion finishes publication before advancing;
+there is no chunk copy, chunk/reference history, producer goroutine, channel or
+filename-keyed index bridging the APIs. The older `ChunkStream` callback still
+receives owned chunks that callers may retain.
+
+Default chunk-buffer capacity is 8,193 bytes; maximum configured capacity is
+8 MiB + 1. Manifest state remains one page and a bounded root as above, plus
+32 KiB reusable store I/O buffers, bounded metadata parsing and the existing
+100,000-entry durability cache. Live memory is bounded by these explicit limits,
+not input length. Temporary allocations and total allocation work still grow
+with chunk count. Root growth/parsing can transiently hold additional bounded
+metadata copies; this is not a zero-allocation or fixed-RSS claim.
+
+### Publication, deduplication and failures
+
+`CreateManifest` holds no outer writer lock; each typed `Put` independently
+acquires/releases the existing writer lock. Do not wrap ingestion in another
+writer lock or call it from a callback that already holds one. Concurrent writers
+can fail with `ErrLocked`; there is no retry policy here.
+
+Identical chunk bytes share one typed address/object across files and revisions.
+Identical sequences/configurations share the manifest ID; edits may reuse chunks
+and full unchanged pages. Existing roots/tree bindings are never mutated. As
+with `Put`, a duplicate is verified and identically republished for durability:
+deduplication avoids duplicate stored content, not all duplicate I/O. This API
+does not use the legacy ROCK pathname-index database.
+
+Any non-EOF read error, including explicit `io.ErrUnexpectedEOF` or an error
+accompanying the last/full-buffer bytes, aborts ingestion. A reader cannot hide
+that failure by returning only EOF afterward. Valid last bytes plus `io.EOF`
+are consumed normally. A persistently non-progressing reader fails with
+`io.ErrNoProgress`. Cancellation is checked between reads/publications; blocking
+caller I/O cannot be forcibly interrupted. Callback errors in `ChunkStream`,
+publication errors and `CopyFile` writer/short-write failures propagate.
+
+On failure there is no successful manifest ID or implicit tree/ref update.
+Already-published unreferenced chunks/pages can remain, and an uncertain final
+publication can leave a complete root. Discard the zero ID/error result and retry
+the same intent; do not treat a visible object as acknowledgement. Corrupt shared
+objects fail closed and are not silently repaired. Restore output is provisional
+until `CopyFile` returns nil.
+
+### Reproducible generated-input evidence
+
+```
+go test ./internal/storev2 -run '^TestIngestGeneratedStream$' -count=1 -v
+```
+
+This deterministic scenario generates SHA-256 counter blocks incrementally,
+ingests with minimum 8 KiB/maximum 32 KiB/window 48, reopens the actual store and
+compares every restored byte with a separate bounded generator. Neither complete
+input nor reconstructed output is retained. The 32 MiB case crosses two immutable
+manifest pages; the test checks exact length/checksum and bounded I/O requests.
+
+Observed on Windows/amd64 Go 1.21.13, `GOTOOLCHAIN=local`, offline module mode,
+CGO disabled:
+
+| Input | Pages | Largest read request | Largest restore write | Sampled Go heap baseline / peak | Total allocated during ingestion |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 MiB | 1 | 32,769 B | 21,342 B | 370,448 / 1,593,640 B | 1,223,192 B |
+| 32 MiB | 2 | 32,769 B | 21,924 B | 441,776 / 3,875,984 B | 31,908,056 B |
+
+The run passed in 35.933s (1 MiB subcase 1.06s; 32 MiB subcase 34.40s).
+Heap is sampled every 32 source reads and after ingestion with `runtime.MemStats`;
+it is **not RSS, an exact peak, or an asserted performance target**. These values
+include runtime/store effects and will vary. The architecture and checked buffer
+bounds, not two samples alone, establish the bounded streaming policy.
+This does not qualify PB-16's 10 GiB/256 MiB target, CLI ingestion, power-loss
+behavior, large-binary throughput, or Linux/macOS runtime performance.
+
+Permanent preservation tests also ingest the PB-02 real mixed/compressed corpus,
+restore every repeated-path revision independently after reopen, check cross-file
+and edited/inserted-revision sharing, and exercise fragmentation, canonical
+maximum chunk size, final-bytes errors, cancellation, publication faults and
+corrupt deduplication candidates. PB-04's existing traversal tests retain
+missing/short/trailing/out-of-order/checksum and destination-error coverage.
+
+
 
 ## Exercised evidence and limits
 
@@ -259,3 +369,26 @@ on Go 1.27.3. The preceding unfiltered minimum-toolchain focused run passed
 0.248s). These are local correctness checks, not performance qualifications.
 Linux/macOS runtime, Docker integration, race and fuzz CI were not exercised
 by these Windows runs.
+
+### PB-05 local verification
+
+Both installed Windows/amd64 toolchains, Go 1.21.13 and Go 1.27.3, passed:
+
+```
+go mod verify
+go build ./...
+go vet ./...
+go test ./... -count=1
+```
+
+Every command used `GOTOOLCHAIN=local`, `GOPROXY=off`, `GOSUMDB=off` and
+`CGO_ENABLED=0`. Full storev2 observations: 84.060s (Go 1.21.13) and 80.380s
+(Go 1.27.3), with the two full runs executing concurrently. These include the
+generated scenario and are correctness observations, not throughput benchmarks.
+The preceding focused minimum-toolchain streaming/ingestion checks passed:
+ROCK 0.558s, storev2 8.916s. The separate generated-input run above supplies
+the reported heap/buffer observations.
+
+Local Windows checks did not execute Linux/macOS runtime, race detection,
+fuzz campaigns or Docker integration. Those remain PR CI/platform gates;
+no cross-platform, physical-crash or PB-16 large-binary result is implied.

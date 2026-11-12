@@ -75,100 +75,59 @@ func (f *FastCDC) Chunk(data []byte) ([]Chunk, error) {
 	if err := f.validate(); err != nil {
 		return nil, err
 	}
-	if len(data) == 0 {
-		return nil, nil
-	}
-
 	var chunks []Chunk
-	offset := int64(0)
-	pos := 0
-
-	// Pre-compute prime^window for rolling hash update
-	primePow := uint32(1)
-	for i := 0; i < f.WindowSize; i++ {
-		primePow *= f.Prime
+	var offset int64
+	primePow := f.primePower()
+	for len(data) != 0 {
+		end := f.boundary(data, primePow)
+		content := bytes.Clone(data[:end])
+		sum := sha256.Sum256(content)
+		chunks = append(chunks, Chunk{
+			Hash: hex.EncodeToString(sum[:]), Offset: offset,
+			Size: int64(end), Content: content,
+		})
+		offset += int64(end)
+		data = data[end:]
 	}
-
-	for pos < len(data) {
-		// Need at least min chunk size + window to start looking for boundaries
-		if pos+f.WindowSize >= len(data) {
-			// Just take remaining data as final chunk
-			chunkData := data[pos:]
-			contentHash := sha256.Sum256(chunkData)
-			chunk := Chunk{
-				Hash:    hex.EncodeToString(contentHash[:]),
-				Offset:  offset,
-				Size:    int64(len(chunkData)),
-				Content: make([]byte, len(chunkData)),
-			}
-			copy(chunk.Content, chunkData)
-			chunks = append(chunks, chunk)
-			break
-		}
-
-		// Compute initial hash for the first window
-		windowEnd := pos + f.WindowSize
-		hash := computeHash(data[pos:windowEnd], f.Prime)
-
-		// Slide the window and check for boundaries
-		chunkEnd := -1
-		avgChunkSizeVal := (f.MinChunkSize + f.MaxChunkSize) / 2
-
-		for i := windowEnd; i < len(data) && i < pos+f.MaxChunkSize; i++ {
-			// Update rolling hash FIRST (so we have hash for current window position)
-			hash = hash*f.Prime + uint32(data[i]) - primePow*uint32(data[i-f.WindowSize])
-
-			// Check for chunk boundary once we've passed min size
-			if (i - pos) >= f.MinChunkSize {
-				// Primary: rolling hash boundary
-				if (hash & f.Mask) == f.Target {
-					chunkEnd = i
-					break
-				}
-				// Secondary: force boundary at average chunk size if no boundary found yet
-				if chunkEnd == -1 && (i-pos) >= avgChunkSizeVal {
-					// Look ahead for a zero byte (common boundary in binary)
-					for j := i; j < i+64 && j < len(data) && j < pos+f.MaxChunkSize; j++ {
-						if data[j] == 0 && j+1 < len(data) && data[j+1] != 0 {
-							chunkEnd = j + 1
-							break
-						}
-					}
-					if chunkEnd != -1 {
-						break
-					}
-				}
-			}
-		}
-
-		// If no boundary found, use max chunk size (but respect data bounds)
-		if chunkEnd == -1 {
-			chunkEnd = pos + f.MaxChunkSize
-			if chunkEnd > len(data) {
-				chunkEnd = len(data)
-			}
-		}
-
-		chunkData := data[pos:chunkEnd]
-
-		// Compute content hash (SHA-256 for deduplication)
-		contentHash := sha256.Sum256(chunkData)
-		hashStr := hex.EncodeToString(contentHash[:])
-
-		chunk := Chunk{
-			Hash:    hashStr,
-			Offset:  offset,
-			Size:    int64(len(chunkData)),
-			Content: make([]byte, len(chunkData)),
-		}
-		copy(chunk.Content, chunkData)
-
-		chunks = append(chunks, chunk)
-		offset += int64(len(chunkData))
-		pos = chunkEnd
-	}
-
 	return chunks, nil
+}
+
+func (f *FastCDC) primePower() uint32 {
+	power := uint32(1)
+	for i := 0; i < f.WindowSize; i++ {
+		power *= f.Prime
+	}
+	return power
+}
+
+// boundary needs at most MaxChunkSize+1 bytes. The extra byte preserves the
+// zero/nonzero lookahead at the maximum boundary, even across reader fragments.
+func (f *FastCDC) boundary(data []byte, primePow uint32) int {
+	if len(data) <= f.WindowSize {
+		return len(data)
+	}
+	hash := computeHash(data[:f.WindowSize], f.Prime)
+	average := f.MinChunkSize + (f.MaxChunkSize-f.MinChunkSize)/2
+	for i := f.WindowSize; i < len(data) && i < f.MaxChunkSize; i++ {
+		hash = hash*f.Prime + uint32(data[i]) - primePow*uint32(data[i-f.WindowSize])
+		if i < f.MinChunkSize {
+			continue
+		}
+		if hash&f.Mask == f.Target {
+			return i
+		}
+		if i >= average {
+			for j := i; j-i < 64 && j < len(data) && j < f.MaxChunkSize; j++ {
+				if data[j] == 0 && j+1 < len(data) && data[j+1] != 0 {
+					return j + 1
+				}
+			}
+		}
+	}
+	if len(data) < f.MaxChunkSize {
+		return len(data)
+	}
+	return f.MaxChunkSize
 }
 
 // ChunkFile chunks a file
@@ -190,44 +149,32 @@ func (f *FastCDC) ChunkReader(reader io.Reader) ([]Chunk, error) {
 }
 
 // ChunkStream uses bounded memory and exactly the same boundaries as Chunk.
-// One lookahead byte is needed by Chunk's zero-byte boundary heuristic.
+// Callback chunks own their contents and may be retained. Use NewChunkReader
+// instead when the consumer can finish with each borrowed chunk before Next.
 func (f *FastCDC) ChunkStream(reader io.Reader, chunkCallback func(Chunk) error) error {
-	if err := f.validate(); err != nil {
-		return err
-	}
 	if chunkCallback == nil {
 		return fmt.Errorf("nil chunk callback")
 	}
-	buf := make([]byte, f.MaxChunkSize+1)
-	pending := 0
+	stream, err := f.NewChunkReader(reader)
+	if err != nil {
+		return err
+	}
 	var offset int64
 	for {
-		n, err := io.ReadFull(reader, buf[pending:])
-		total := pending + n
-		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			return fmt.Errorf("read error: %w", err)
-		}
-		chunks, chunkErr := f.Chunk(buf[:total])
-		if chunkErr != nil {
-			return chunkErr
-		}
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			for _, c := range chunks {
-				c.Offset = offset
-				if err := chunkCallback(c); err != nil {
-					return err
-				}
-				offset += c.Size
-			}
+		data, err := stream.Next()
+		if err == io.EOF {
 			return nil
 		}
-		c := chunks[0]
-		c.Offset = offset
+		if err != nil {
+			return err
+		}
+		content := bytes.Clone(data)
+		sum := sha256.Sum256(content)
+		c := Chunk{Hash: hex.EncodeToString(sum[:]), Offset: offset, Size: int64(len(content)), Content: content}
 		if err := chunkCallback(c); err != nil {
 			return err
 		}
 		offset += c.Size
-		pending = copy(buf, buf[int(c.Size):total])
 	}
 }
 
