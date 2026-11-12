@@ -1,12 +1,79 @@
-# PB-03–PB-05 logical store and PB-07 physical packs
+# Format2 local repository engine and physical packs
 
-`internal/storev2` implements the [frozen format-2 object contract](contracts/v2.md)
-as a production library: PB-03 adds the typed durable object/ref store; PB-04 adds
-immutable paged file construction and verified raw-byte reads; PB-05 adds bounded
-content-defined ingestion; PB-07 adds compressed checksummed physical packs and
-rebuildable indexes. **The CLI and `/v1/` service still use v1.** There is
-no implicit migration, GC, destructive compaction or Git importer.
-Use separate disposable directories; never point an old CLI at a v2 directory.
+`internal/storev2` implements the [frozen format-2 object contract](contracts/v2.md):
+typed durable object/ref publication, immutable paged files, bounded streaming
+ingestion and compressed checksummed physical packs with rebuildable indexes.
+`internal/repository` now powers CLI `commit`, `status`, `log`, `branch`,
+`checkout`, `restore` and `fsck`. Text/PNG/JPEG/gzip/ZIP and arbitrary bytes use the
+same `IngestFile`/`CopyFile` path, without filename or binary classification.
+The `/v1/` service remains legacy-only. There is no implicit migration, format2
+sync, merge command, GC or Git importer.
+
+## PB-06: local CLI cutover
+
+`pebble init` uses `InitRepository` to publish only new metadata in an existing
+working directory. Existing files are preserved; existing/partial metadata and
+initialization remnants are refused. The stricter library `Init` still requires
+an empty directory. Discovery stops at the nearest `.pebble`; legacy/unmarked,
+unknown and incomplete repositories fail explicitly, never fall through to an
+ancestor or another engine. Legacy push/fetch and service code reject markers.
+
+Canonical tree/commit helpers reuse the store decoder, envelope validation and
+publication. Commit parents retain their supplied order; signed seconds,
+nanoseconds, exact offset spelling, identity and message survive read/write.
+Log follows all parents in supplied order, first-parent first, without duplicates.
+Status streams raw SHA-256 and executable mode comparisons against HEAD, not an
+index or a filename heuristic; ignored tracked files remain tracked.
+
+The repository engine holds `.pebble/worktree.lock` around cooperating
+commit/branch/checkout/restore writers. Branch refs are published only through
+`UpdateRef` graph validation, fast-forward/CAS and durability. HEAD is separate
+symbolic metadata with exact CAS and verified targets; only the initial unborn
+`heads/main` may lack a commit. Additional branches require the first commit.
+
+Checkout preflights dirty tracked files, unsafe/case-aliased paths, non-files and
+untracked/ignored collisions. It probes target names and directory components in
+private staging using the actual filesystem's alias rules before any working-file
+mutation. Existing components must match their enumerated spelling exactly:
+normalization aliases cannot be adopted or traversed through an untracked path.
+Unrepresentable trees are refused, never Unicode-normalized into different paths.
+Filesystems that distinguish canonically equivalent spellings retain both.
+Identical untracked files with exact path spellings may be adopted. All target
+files and rollback copies are staged on disk through verified `CopyFile`, synced
+and closed before any destination replacement. Restore stages and verifies one
+tracked HEAD file before discarding its edits. Provisional bytes are never
+acknowledged or installed after a copy failure. File/directory transitions remain
+explicit errors. Ordinary checkout failures attempt rollback; incomplete rollback
+or uncertain HEAD publication retains recovery staging and returns an error.
+This is not crash journaling or a guarantee against concurrent editors.
+
+`fsck` uses the public `Inventory` facade to validate every published loose and
+packed physical copy, including unreachable objects and duplicate representations.
+It then calls `Verify` for every unique typed ID and verifies symbolic HEAD and
+all ref closures. A physically valid but incomplete/unreconstructable unreachable
+graph is an error, not a skipped object. Derived pack indexes remain rebuildable;
+fsck never scans private backend paths or repairs metadata. Inventory is not a
+transactionally frozen snapshot of concurrent additions.
+
+The actual executable regression builds the CLI and launches a fresh process per
+operation on disposable mixed fixtures and repeated-path edit/insertion/truncation/
+empty histories. It compares exact restored bytes and independent SHA-256 for
+every revision and encoded asset, and exercises dirty/untracked/ignore guards.
+It packs the mixed history through public `Pack`, then reopens the actual CLI for
+log/branch/status/checkout/restore/fsck and a new commit/ref publication. Loose
+copies remain intact; packed copies must validate too. An unreachable incomplete
+tree must fail actual CLI fsck without changing valid working files.
+An isolated packed orphan with a canonical envelope but false raw checksum must
+also fail fsck while its valid branch and exact user bytes remain intact.
+Additional regressions cover canonical golden metadata, ordered parents, legacy
+source preservation, nested incomplete discovery and late-checksum staging failure.
+Normalization regressions cover aliased absent targets, directory components and
+existing untracked aliases with byte/HEAD preservation, explicitly skipping where
+the fixture filesystem distinguishes the spellings. A complementary regression
+verifies independent bytes and clean status for distinct spellings on those
+filesystems. macOS CI runs these checks verbosely to expose exercised/skipped cases.
+Run `go test ./cmd/pebble ./internal/repository ./internal/storev2 -count=1`.
+No large-binary, arbitrary power-loss or format2 remote qualification is implied.
 
 ## API and validation boundary
 
@@ -29,6 +96,12 @@ cannot interrupt an arbitrary blocking caller-supplied reader or kernel flush.
 | `CopyFile(ctx, manifestID, destinationWriter)` | Streams raw file bytes, validating all typed addresses, page partitioning, exact lengths and whole-file checksum. Output is provisional until nil error; discard on failure. Nil destination verifies without retaining output. |
 | `UpdateRef(ctx, name, expectedIDPointer, targetID)` | Nil expected = absent; exact CAS + fast-forward branches, create-only tags, graph verification, collision checks and atomic durable publication under the writer lock. Identical retries also reverify and establish a fresh durability barrier. |
 | `GetRef(ctx, name)` | Returns a target only after validating ref metadata and complete graph, including annotated tag name binding. Missing refs wrap the existing `REF_NOT_FOUND` category and `os.ErrNotExist`. |
+| `InitRepository(ctx, workingDirectory)` | Creates only new format2 metadata and symbolic unborn main; preserves working files and rejects existing/partial metadata. |
+| `CreateTree` / `ReadTree` | Canonical typed tree bindings; sorted input is required, never silently reordered. |
+| `CreateCommit` / `ReadCommit` | Canonical metadata with ordered distinct parents and exact signed/fractional time and offset spelling. |
+| `FileInfo(ctx, manifestID)` | Verified manifest metadata length/raw SHA-256; not a replacement for `CopyFile` reconstruction checks. |
+| `ListRefs(ctx)` / `VerifyRefs(ctx)` | Verified catalog and shared bounded closure walk, including tags; returns owned targets / reachable-object count. No private-layout walking in the repository engine. |
+| `Head(ctx)` / `UpdateHead(ctx, expected, target)` | Bounded canonical symbolic HEAD; writer-locked CAS, graph-verified target and durable metadata publication, never a branch-ref write. |
 | `Inventory(ctx)` | Returns sorted unique typed IDs after validating every published loose and packed physical copy, including unreachable objects. Read-only; callers can `Verify` each ID for closure checks. |
 | `Pack(ctx, ids)` | Explicitly writes a deterministic immutable pack of selected objects, with compression only when smaller. Preserves all loose objects, IDs, manifests and refs. Returns the physical pack digest, not a logical object ID. |
 | `RebuildPackIndexes(ctx)` | Under the existing writer lock, validates every complete pack before publishing any rebuilt index/catalog; recovers interrupted publication without deleting data. |

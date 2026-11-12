@@ -22,6 +22,16 @@ func NewRepository(path string) (*Repository, error) {
 		return nil, err
 	}
 	for {
+		if _, err := os.Lstat(filepath.Join(root, ".pebble")); err == nil {
+			if err := legacyFormat(root); err != nil {
+				return nil, err
+			}
+			if !IsInitialized(root) {
+				return nil, fmt.Errorf("incomplete legacy Pebble repository: %s", root)
+			}
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
 		if IsInitialized(root) {
 			return repositoryAt(root), nil
 		}
@@ -85,8 +95,23 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(f.Name(), path)
 }
 
+// Legacy services must never interpret format2 metadata or objects as v1.
+func legacyFormat(root string) error {
+	_, err := os.Lstat(filepath.Join(root, ".pebble", "format"))
+	if err == nil {
+		return fmt.Errorf("legacy v1 engine rejects marked repositories; format2 sync is not implemented")
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // Lock serializes cooperating writers. A stale lock is deliberately not removed automatically.
 func (r *Repository) Lock() (func(), error) {
+	if err := legacyFormat(r.rootPath); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(r.rootPath, ".pebble", "write.lock")
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
@@ -124,6 +149,9 @@ func validateRef(ref string) error {
 	return validFilePath(ref)
 }
 func (r *Repository) GetHead() (string, error) {
+	if err := legacyFormat(r.rootPath); err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(r.headPath)
 	if err != nil {
 		return "", err
@@ -136,12 +164,18 @@ func (r *Repository) GetHead() (string, error) {
 	return ref, validateRef(ref)
 }
 func (r *Repository) SetHead(ref string) error {
+	if err := legacyFormat(r.rootPath); err != nil {
+		return err
+	}
 	if err := validateRef(ref); err != nil {
 		return err
 	}
 	return atomicWrite(r.headPath, []byte("ref: refs/"+ref+"\n"), 0644)
 }
 func (r *Repository) GetRef(ref string) (string, error) {
+	if err := legacyFormat(r.rootPath); err != nil {
+		return "", err
+	}
 	if err := validateRef(ref); err != nil {
 		return "", err
 	}
@@ -156,6 +190,9 @@ func (r *Repository) GetRef(ref string) (string, error) {
 	return hash, nil
 }
 func (r *Repository) SetRef(ref, hash string) error {
+	if err := legacyFormat(r.rootPath); err != nil {
+		return err
+	}
 	if err := validateRef(ref); err != nil {
 		return err
 	}
@@ -169,6 +206,9 @@ func (r *Repository) SetRef(ref, hash string) error {
 	return atomicWrite(path, []byte(hash+"\n"), 0644)
 }
 func (r *Repository) GetRefs() ([]Ref, error) {
+	if err := legacyFormat(r.rootPath); err != nil {
+		return nil, err
+	}
 	refs := []Ref{}
 	base := filepath.Join(r.refsPath, "heads")
 	err := filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
@@ -207,6 +247,9 @@ func validateObject(obj *Object) error {
 	return nil
 }
 func (r *Repository) StoreObject(obj *Object) error {
+	if err := legacyFormat(r.rootPath); err != nil {
+		return err
+	}
 	if err := validateObject(obj); err != nil {
 		return err
 	}
@@ -233,6 +276,9 @@ func (r *Repository) StoreObject(obj *Object) error {
 	return atomicWrite(path, data, 0644)
 }
 func (r *Repository) GetObject(hash string) (*Object, error) {
+	if err := legacyFormat(r.rootPath); err != nil {
+		return nil, err
+	}
 	if !validHash(hash) {
 		return nil, fmt.Errorf("invalid hash %q", hash)
 	}

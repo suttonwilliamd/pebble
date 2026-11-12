@@ -8,20 +8,22 @@ and independent backups while dogfooding.
 
 ## What works today
 
-- SHA-256-addressed blobs, deterministic file trees and linked immutable commits.
+- Typed SHA-256 objects, canonical file trees and immutable ordered-parent commits.
 - Whole-working-tree commits, change detection (added/modified/deleted), full log.
 - Branch creation/listing (including `feature/name`) and file-restoring checkout.
 - Checkout refuses dirty tracked files, untracked/ignored file collisions, unsafe
   paths and corrupt target objects before changing files.
 - Explicit single-file recovery from HEAD with `pebble restore <file>`.
-- Object integrity verification with `pebble fsck`.
+- Integrity verification of every stored object/copy and all refs with `pebble fsck`,
+  including unreachable loose/packed objects and complete dependency closure.
 - Repository discovery from subdirectories; explicit initialization; writer locks
   and atomic individual metadata/object writes.
-- Experimental `pebbled` server/website, authenticated push/fetch, complete typed
-  history transfer and fast-forward compare-and-swap updates. Docker Compose
-  deployment defaults to loopback-only with a dedicated data volume.
-- ROCK chunking/deduplication libraries, with bounded-memory streaming and
-  batch/stream equivalence tests. **ROCK is not yet wired into CLI commits.**
+- Format2 CLI commits stream text and binaries through ROCK chunking and immutable
+  paged manifests; checkout/restore verify staged raw bytes before replacement.
+- Store API packs provide checksummed compressed physical storage and rebuildable
+  indexes without changing typed IDs, file revisions, or refs.
+- Experimental legacy-v1-only `pebbled` server/website and authenticated push/fetch.
+  New format2 repositories are explicitly rejected by this protocol.
 
 ## What does NOT work yet
 
@@ -31,9 +33,8 @@ and independent backups while dogfooding.
   explicit checkout. Pebble cannot push to GitHub's Git endpoints.
   The old `internal/remote` prototype is not mounted or used by the new server.
 - Merge/combine CLI, Git import/export, clone, staging, diff, branch deletion.
-- Chunk-based CLI snapshots, large-file streaming storage, compression or GC.
-  CLI blobs currently load whole files and store base64 content in JSON. Do not
-  expect large-binary scalability or storage improvements over Git yet.
+- Format2 remote sync, explicit v1 migration and GC. Streaming
+  storage does not yet establish large-binary scalability or improvements over Git.
 - Symlinks/special files and empty directories in snapshots. Non-ignored symlinks
   and special files cause an error rather than being silently lost.
 - Crash-atomic checkout: ordinary I/O errors trigger a best-effort file-content
@@ -47,11 +48,10 @@ are plans, not evidence of shipped functionality.
 
 The [PB-01 v2 format/protocol contract](docs/contracts/v2.md) and its
 [canonical byte fixtures](internal/formatcontract/testdata/v2.json) freeze the
-next engine's representation. The [PB-03/PB-04/PB-05 v2 library](docs/store-v2.md)
-implements typed durable object/ref publication, immutable paged file
-construction/streaming, and bounded-memory content-defined ingestion, **not a
-CLI cutover**. Verify with `go test ./internal/storev2 ./internal/rock ./internal/formatcontract -count=1`;
-production v1 CLI and remote behavior are unchanged.
+current engine's representation. The [format2 store and CLI](docs/store-v2.md)
+implement typed durable object/ref publication, immutable paged file construction,
+bounded-memory content-defined ingestion and the seven local repository flows.
+The `/v1/` service remains legacy-only; there is no automatic migration or fallback.
 
 ## Install
 
@@ -74,6 +74,9 @@ installs into your Go bin directory. Add it to PATH.
 
 Start in a disposable copy or a small project that remains backed up with Git.
 Do not delete `.git`; add `.pebble/` to that project's `.gitignore` if using both.
+`init` creates format2 metadata without changing existing working files. It refuses
+existing or incomplete `.pebble` data. Local commands reject legacy/unmarked
+repositories explicitly; keep their source data intact for future explicit migration.
 Pebble always excludes `.git` and `.pebble` metadata from snapshots.
 
 Set your identity (required; no more placeholder author):
@@ -111,6 +114,8 @@ target file, in which case checkout refuses unless contents and executable mode
 are identical (then the existing file is adopted without rewriting).
 File/directory transitions are currently rejected; empty directories left by
 checkout are harmless.
+Create the first commit before creating another branch. `log` follows all ordered
+parents (first-parent first), displaying each reachable commit once.
 
 ### Ignore rules
 
@@ -127,15 +132,21 @@ Review `pebble status` for secrets before committing; `.gitignore` is not read.
 - Do not edit files concurrently with commit/checkout. The lock serializes Pebble
   writers, not editors or other tools. Repository metadata is assumed locally
   trusted; do not open a malicious `.pebble` directory.
-- If an interrupted process leaves `.pebble/write.lock`, first ensure no Pebble
-  writer is running, then remove that lock manually. Never remove an active lock.
+- If an interrupted process leaves `.pebble/write.lock` or
+  `.pebble/worktree.lock`, first ensure no writer is running. Never remove an active
+  lock. Interrupted initialization also requires manual inspection, not retry/reset.
 - After interruption, back up the entire directory and run `pebble fsck`.
   Committed objects remain available; automatic checkout recovery is not yet built.
-- Legacy snapshots containing Windows backslash paths are not portable to the
-  new guarded checkout. Keep the original working copy and Git backup; there is
-  no automatic migration yet.
+- Ordinary checkout failures attempt rollback using verified disk-backed backups.
+  Incomplete rollback or uncertain HEAD publication retains its staging directory
+  and returns an error. Do not delete recovery files before inspection.
 
 ## Remote test service
+
+This service does **not** accept the format2 repositories created by the current
+CLI. Push/fetch remain available only for existing legacy repositories; the seven
+local commands do not fall back to the legacy engine. Use the isolated legacy
+fixture tests for service development, not a format2 working repository.
 
 See [the Garfield deployment and remote test runbook](docs/garfield-deployment.md).
 It includes the Docker Compose stack, token handling, SSH forwarding, a two-client
@@ -150,13 +161,7 @@ Start `bin/pebbled -data /path/to/disposable-data` (Windows: use `.exe`). It lis
 on `127.0.0.1:7931` by default and shows a small static website at `/`.
 
 ```sh
-pebble push http://127.0.0.1:7931          # push current HEAD, fast-forward only
-pebble fetch http://127.0.0.1:7931 main   # import incoming/main; files unchanged
-pebble checkout incoming/main
-pebble branch work
-pebble checkout work                    # do not develop on incoming/main
-# edit, commit
-pebble push http://127.0.0.1:7931 main   # publish work HEAD to remote main
+go test ./cmd/pebble -run '^TestLegacyRemoteCLI$' -count=1
 ```
 
 The CLI requires HTTPS unless connecting to loopback (including an SSH forward).
