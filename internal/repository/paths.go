@@ -63,13 +63,17 @@ func (r *Repository) safePath(name string) (string, error) {
 	p := r.root
 	parts := strings.Split(name, "/")
 	for i, part := range parts {
-		// Refuse aliases instead of overwriting a differently spelled path on a
-		// case-insensitive filesystem. This also guards directory components.
+		// Refuse differently spelled filesystem aliases, including Unicode
+		// normalization aliases, without rewriting canonical tree paths.
 		children, err := os.ReadDir(p)
 		if err != nil && !os.IsNotExist(err) {
 			return "", err
 		}
+		exact := false
 		for _, child := range children {
+			if child.Name() == part {
+				exact = true
+			}
 			if child.Name() != part && strings.EqualFold(child.Name(), part) {
 				return "", fmt.Errorf("case-colliding working path: %s", name)
 			}
@@ -82,6 +86,9 @@ func (r *Repository) safePath(name string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if !exact {
+			return "", fmt.Errorf("filesystem-alias working path: %s", name)
+		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return "", fmt.Errorf("symlink in snapshot path %s", name)
 		}
@@ -90,6 +97,37 @@ func (r *Repository) safePath(name string) (string, error) {
 		}
 	}
 	return p, nil
+}
+
+// Probe the target namespace before touching working files. Exclusive creates
+// and exact directory spellings use this filesystem's alias rules rather than
+// imposing Unicode normalization on format2 paths that can be distinct elsewhere.
+func preflightFilesystemPaths(stage string, entries []storev2.TreeEntry) error {
+	root := filepath.Join(stage, "paths")
+	if err := os.Mkdir(root, 0700); err != nil {
+		return err
+	}
+	probe := Repository{root: root}
+	for _, entry := range entries {
+		path, err := probe.safePath(entry.Path)
+		if err != nil {
+			return fmt.Errorf("checkout cannot represent path %q: %w", entry.Path, err)
+		}
+		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return err
+		}
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			return fmt.Errorf("checkout cannot represent path %q: %w", entry.Path, err)
+		}
+		if err = file.Close(); err != nil {
+			return err
+		}
+		if _, err = probe.safePath(entry.Path); err != nil {
+			return fmt.Errorf("checkout cannot represent path %q: %w", entry.Path, err)
+		}
+	}
+	return nil
 }
 func mode(executable bool) os.FileMode {
 	if executable {

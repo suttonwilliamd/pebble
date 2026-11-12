@@ -146,6 +146,9 @@ func (r *Repository) Checkout(name string) (err error) {
 			os.RemoveAll(dir)
 		}
 	}()
+	if err = preflightFilesystemPaths(dir, target); err != nil {
+		return err
+	}
 	before := map[string]storev2.TreeEntry{}
 	backup := map[string]string{}
 	staged := map[string]string{}

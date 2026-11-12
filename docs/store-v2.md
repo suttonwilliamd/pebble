@@ -32,7 +32,13 @@ symbolic metadata with exact CAS and verified targets; only the initial unborn
 `heads/main` may lack a commit. Additional branches require the first commit.
 
 Checkout preflights dirty tracked files, unsafe/case-aliased paths, non-files and
-untracked/ignored collisions. Identical untracked files may be adopted. All target
+untracked/ignored collisions. It probes target names and directory components in
+private staging using the actual filesystem's alias rules before any working-file
+mutation. Existing components must match their enumerated spelling exactly:
+normalization aliases cannot be adopted or traversed through an untracked path.
+Unrepresentable trees are refused, never Unicode-normalized into different paths.
+Filesystems that distinguish canonically equivalent spellings retain both.
+Identical untracked files with exact path spellings may be adopted. All target
 files and rollback copies are staged on disk through verified `CopyFile`, synced
 and closed before any destination replacement. Restore stages and verifies one
 tracked HEAD file before discarding its edits. Provisional bytes are never
@@ -61,6 +67,11 @@ An isolated packed orphan with a canonical envelope but false raw checksum must
 also fail fsck while its valid branch and exact user bytes remain intact.
 Additional regressions cover canonical golden metadata, ordered parents, legacy
 source preservation, nested incomplete discovery and late-checksum staging failure.
+Normalization regressions cover aliased absent targets, directory components and
+existing untracked aliases with byte/HEAD preservation, explicitly skipping where
+the fixture filesystem distinguishes the spellings. A complementary regression
+verifies independent bytes and clean status for distinct spellings on those
+filesystems. macOS CI runs these checks verbosely to expose exercised/skipped cases.
 Run `go test ./cmd/pebble ./internal/repository ./internal/storev2 -count=1`.
 No large-binary, arbitrary power-loss or format2 remote qualification is implied.
 
