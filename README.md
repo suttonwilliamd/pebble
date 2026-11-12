@@ -22,6 +22,8 @@ and independent backups while dogfooding.
   paged manifests; checkout/restore verify staged raw bytes before replacement.
 - Store API packs provide checksummed compressed physical storage and rebuildable
   indexes without changing typed IDs, file revisions, or refs.
+- Explicit read-only v1 migration into a fresh separate v2 destination, with
+  selected-branch history verification and a persistent source-to-v2 ID map.
 - Experimental legacy-v1-only `pebbled` server/website and authenticated push/fetch.
   New format2 repositories are explicitly rejected by this protocol.
 
@@ -33,8 +35,8 @@ and independent backups while dogfooding.
   explicit checkout. Pebble cannot push to GitHub's Git endpoints.
   The old `internal/remote` prototype is not mounted or used by the new server.
 - Merge/combine CLI, Git import/export, clone, staging, diff, branch deletion.
-- Format2 remote sync, explicit v1 migration and GC. Streaming
-  storage does not yet establish large-binary scalability or improvements over Git.
+- Format2 remote sync and GC. Streaming storage does not yet establish
+  large-binary scalability or improvements over Git.
 - Symlinks/special files and empty directories in snapshots. Non-ignored symlinks
   and special files cause an error rather than being silently lost.
 - Crash-atomic checkout: ordinary I/O errors trigger a best-effort file-content
@@ -76,7 +78,7 @@ Start in a disposable copy or a small project that remains backed up with Git.
 Do not delete `.git`; add `.pebble/` to that project's `.gitignore` if using both.
 `init` creates format2 metadata without changing existing working files. It refuses
 existing or incomplete `.pebble` data. Local commands reject legacy/unmarked
-repositories explicitly; keep their source data intact for future explicit migration.
+repositories explicitly; use the separate-destination migration below.
 Pebble always excludes `.git` and `.pebble` metadata from snapshots.
 
 Set your identity (required; no more placeholder author):
@@ -116,6 +118,39 @@ File/directory transitions are currently rejected; empty directories left by
 checkout are harmless.
 Create the first commit before creating another branch. `log` follows all ordered
 parents (first-parent first), displaying each reachable commit once.
+
+### Explicit legacy v1 migration
+
+Evaluate this experimental path offline on backed-up disposable copies. The
+source must be the exact real v1 root (no ancestor discovery, symlinks or filesystem
+aliases). The destination must not exist; its real parent must already exist
+outside the source.
+
+```sh
+pebble migrate-v1 /disposable/v1 /disposable/new-v2
+pebble migrate-v1 /disposable/v1 /disposable/selected-v2 --branch main --branch feature/media --head main
+```
+
+Without `--branch`, all branches are selected. Without `--head`, source HEAD is
+retained and must be selected. Every selected reachable revision is converted and
+verified, including shared ancestors. The destination contains selected HEAD's
+committed files and `.pebble/migration-v1.json` with branch and blob/tree/commit
+ID mappings. Uncommitted files, index caches, settings and credentials are not
+copied. Source metadata, refs, HEAD, working files and locks are never modified.
+
+Unsupported metadata/modes/branches, unsafe paths, corrupt or missing dependencies,
+existing destinations and overlap fail explicitly. Only canonical shipped v1
+JSON and modes `-rw-r--r--` / `-rwxr-xr-x` are supported, not arbitrary permissions
+(including legacy `-rw-rw-rw-`). A single unborn `main` is supported, not other
+unborn layouts. Legacy envelopes are bounded to 128 MiB; v2 metadata and graph
+bounds also apply, without truncating history.
+
+A verified private sibling stage is installed by exclusive directory rename.
+Interruption may leave `.pebble-migrate-*` working material, not an acknowledged
+destination. An uncertain OS publication error may leave a complete destination:
+preserve it, inspect it and run `fsck`; never overwrite it or remove recovery data
+automatically. See [migration details](docs/store-v2.md#pb-08-explicit-verified-v1-migration).
+
 
 ### Ignore rules
 

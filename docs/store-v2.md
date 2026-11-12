@@ -9,6 +9,76 @@ same `IngestFile`/`CopyFile` path, without filename or binary classification.
 The `/v1/` service remains legacy-only. There is no implicit migration, format2
 sync, merge command, GC or Git importer.
 
+## PB-08: explicit verified v1 migration
+
+`repository.MigrateV1(ctx, exactSourceRoot, freshDestination, MigrationOptions)`
+and `pebble migrate-v1 <source> <destination> [--branch <name>]... [--head <name>]`
+provide an explicit offline copy, never an in-place upgrade or legacy fallback.
+Empty selection means all branches; HEAD defaults to source HEAD and must be
+selected. Excluding that branch requires an explicit `Head`/`--head`.
+Source discovery/constructors are not called. Existing locks cause failure, not
+cleanup. Every source file is opened read-only; no repair or metadata creation.
+
+The loader validates shipped snapshot JSON envelopes, raw lowercase SHA-256
+addresses, kinds/sizes, flat trees, symbolic refs and each optional parent.
+The embedded pre-self-hash is validated when present and intentionally omitted
+from v2 commits; frozen fixtures with an empty embedded hash remain supported.
+Canonical JSON from the shipped structs is required (outer whitespace allowed).
+Unknown/duplicate fields, alternate schemas, invalid UTF-8 spellings and
+unrepresentable identities/dates/messages/modes/ref namespaces fail explicitly.
+Modes must be `-rw-r--r--` or `-rwxr-xr-x`, not arbitrary permission bits, including
+`-rw-rw-rw-`. No identity, branch name, parent, path spelling or bytes are invented.
+
+All selected ancestors are converted parent-first using `IngestFile` (and its
+`CreateManifest` path), `CreateTree`, `CreateCommit`, ref CAS and HEAD CAS.
+Every historical tree passes repository path/collision guards and actual filesystem
+namespace probes. Source IDs map to typed manifests/trees/commits, not relabeled
+v1 hashes. Reopened v2 reads compare every commit's identity/date/message/parent
+mapping, every tree/path/mode/manifest mapping, and exact `CopyFile` bytes plus
+independent whole-file SHA-256 and lengths for every historical blob. Ref catalog
+and selected HEAD are checked independently. HEAD files are restored in the
+private stage with existing repository guards and staged streaming writes.
+A working executable-mode mismatch fails rather than clearing the stored bit.
+
+The whole conversion and `.pebble/migration-v1.json` receipt stay inside a private
+`.pebble-migrate-*` sibling until publication. Overlap, aliases, symlink/junction
+components and existing destinations are refused; real destination parents must
+exist. Every consumed source file and the full HEAD/ref catalog are re-read before
+publication to detect changes. The caller must keep the source quiescent; this is
+detection, not a source write lock. Working files/index/settings/credentials are
+not migration input or copied history. A single unborn `heads/main` is supported;
+other selected unborn layouts cannot be faithfully represented in current v2.
+
+Local policy bounds whole legacy JSON envelopes to 128 MiB and legacy commit/tree
+payloads to 1 MiB, plus v2 constructor/graph bounds. Oversize/deep/incomplete input
+fails without shortened history or a successful result. Legacy decoding retains
+one bounded envelope/file; this is not a large-v1-file memory qualification.
+
+Publication syncs staged files and installs the entire directory without replacing
+an existing name: fixed-local-NTFS write-through `MoveFileEx` on Windows,
+`renameat2(RENAME_NOREPLACE)` on Linux, `renameatx_np(RENAME_EXCL)` on macOS,
+and POSIX directory barriers. Unsupported primitives fail without copy/delete.
+Ordinary errors remove only the private stage; abrupt termination may leave it.
+A namespace/barrier error is not success and may leave a complete destination after
+uncertain publication. Preserve/inspect/fsck it; never retry into or automatically
+delete it. Physical power-loss qualification is not implied.
+
+Focused disposable-fixture checks:
+
+```sh
+go test ./internal/repository -run '^TestMigration' -count=1
+go test ./cmd/pebble -run '^TestExecutableMigration$' -count=1
+```
+
+The regression builds and launches the actual CLI, not mocked forwarding.
+Cases cover selected/shared history, repeated-path PNG/JPEG/gzip/ZIP/noise, empty
+blobs/trees/history, exact source-state preservation, corrupt/missing dependencies,
+unsupported metadata/modes, unsafe paths/overlap/aliases/existing destinations,
+cancellation, competing publication, the actual exclusive rename and process
+termination before publication. No personal repository migration, scale benchmark,
+or physical-crash qualification is claimed.
+
+
 ## PB-06: local CLI cutover
 
 `pebble init` uses `InitRepository` to publish only new metadata in an existing
