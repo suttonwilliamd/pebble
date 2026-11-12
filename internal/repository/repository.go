@@ -150,8 +150,21 @@ func (r *Repository) lock() (func() error, error) {
 	return func() error { return os.Remove(p) }, nil
 }
 func (r *Repository) Verify() (int, error) {
+	ctx := context.Background()
+	ids, err := r.store.Inventory(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		if err := r.store.Verify(ctx, id); err != nil {
+			return 0, err
+		}
+	}
 	if _, _, err := r.current(); err != nil {
 		return 0, err
 	}
-	return r.store.VerifyRefs(context.Background())
+	if _, err := r.store.VerifyRefs(ctx); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/suttonwilliamd/pebble/internal/storev2"
 	"github.com/suttonwilliamd/pebble/internal/testfixture"
 )
 
@@ -79,6 +81,21 @@ func TestExecutableMixedHistory(t *testing.T) {
 			t.Fatal(s)
 		}
 	}
+	// Exercise the public physical backend without reading or altering its
+	// private layout. Pack preserves loose copies; every reopened CLI read
+	// must still validate packed representations as well.
+	store, err := storev2.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := store.Inventory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Pack(context.Background(), ids); err != nil {
+		t.Fatal(err)
+	}
+	invoke(true, "fsck")
 	history := invoke(true, "log")
 	for _, word := range []string{"initial", "edited", "inserted", "truncated", "empty"} {
 		if !strings.Contains(history, word) {
@@ -139,4 +156,69 @@ func TestExecutableMixedHistory(t *testing.T) {
 	if string(got) != "precious untracked" {
 		t.Fatal("untracked data lost")
 	}
+	// A canonical but unreachable tree with a missing file revision must not
+	// escape physical fsck merely because all branch histories remain valid.
+	if _, err = store.CreateTree(context.Background(), []storev2.TreeEntry{
+		{Path: "missing", Manifest: storev2.ID{Kind: storev2.Manifest}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	invoke(false, "fsck")
+	assertFiles(append(files, revisions[0].File))
+
+	// A second disposable repository isolates semantic corruption in a packed,
+	// unreachable manifest. Public codecs keep the envelope/address canonical;
+	// only reconstruction detects its false whole-file checksum.
+	root = t.TempDir()
+	invoke(true, "init")
+	preserved := []byte("keep these exact user bytes")
+	if err = os.WriteFile(filepath.Join(root, "precious"), preserved, 0644); err != nil {
+		t.Fatal(err)
+	}
+	invoke(true, "commit", "preserved")
+	store, err = storev2.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := store.GetRef(context.Background(), "heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := store.ReadCommit(context.Background(), head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.ReadTree(context.Background(), commit.Tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest storev2.ID
+	for _, entry := range entries {
+		if entry.Path == "precious" {
+			manifest = entry.Manifest
+		}
+	}
+	var wire bytes.Buffer
+	if err = store.Copy(context.Background(), manifest, &wire); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Clone(wire.Bytes()[storev2.HeaderSize:])
+	payload[8] ^= 1 // Frozen manifest schema: u64 length, then raw SHA-256.
+	bad, err := storev2.NewID(storev2.Manifest, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, err := storev2.Header(storev2.Manifest, uint64(len(payload)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Put(context.Background(), bad, bytes.NewReader(append(header[:], payload...))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Pack(context.Background(), []storev2.ID{bad}); err != nil {
+		t.Fatal(err)
+	}
+	invoke(false, "fsck")
+	invoke(true, "status") // The valid branch still opens independently.
+	assertFiles([]testfixture.File{{Path: "precious", Data: preserved}})
 }

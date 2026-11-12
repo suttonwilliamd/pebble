@@ -1,8 +1,9 @@
-# Format2 store and PB-06 local repository engine
+# Format2 local repository engine and physical packs
 
 `internal/storev2` implements the [frozen format-2 object contract](contracts/v2.md):
-typed durable object/ref publication, immutable paged files and bounded streaming
-ingestion. `internal/repository` now powers CLI `commit`, `status`, `log`, `branch`,
+typed durable object/ref publication, immutable paged files, bounded streaming
+ingestion and compressed checksummed physical packs with rebuildable indexes.
+`internal/repository` now powers CLI `commit`, `status`, `log`, `branch`,
 `checkout`, `restore` and `fsck`. Text/PNG/JPEG/gzip/ZIP and arbitrary bytes use the
 same `IngestFile`/`CopyFile` path, without filename or binary classification.
 The `/v1/` service remains legacy-only. There is no implicit migration, format2
@@ -40,10 +41,24 @@ explicit errors. Ordinary checkout failures attempt rollback; incomplete rollbac
 or uncertain HEAD publication retains recovery staging and returns an error.
 This is not crash journaling or a guarantee against concurrent editors.
 
+`fsck` uses the public `Inventory` facade to validate every published loose and
+packed physical copy, including unreachable objects and duplicate representations.
+It then calls `Verify` for every unique typed ID and verifies symbolic HEAD and
+all ref closures. A physically valid but incomplete/unreconstructable unreachable
+graph is an error, not a skipped object. Derived pack indexes remain rebuildable;
+fsck never scans private backend paths or repairs metadata. Inventory is not a
+transactionally frozen snapshot of concurrent additions.
+
 The actual executable regression builds the CLI and launches a fresh process per
 operation on disposable mixed fixtures and repeated-path edit/insertion/truncation/
 empty histories. It compares exact restored bytes and independent SHA-256 for
 every revision and encoded asset, and exercises dirty/untracked/ignore guards.
+It packs the mixed history through public `Pack`, then reopens the actual CLI for
+log/branch/status/checkout/restore/fsck and a new commit/ref publication. Loose
+copies remain intact; packed copies must validate too. An unreachable incomplete
+tree must fail actual CLI fsck without changing valid working files.
+An isolated packed orphan with a canonical envelope but false raw checksum must
+also fail fsck while its valid branch and exact user bytes remain intact.
 Additional regressions cover canonical golden metadata, ordered parents, legacy
 source preservation, nested incomplete discovery and late-checksum staging failure.
 Run `go test ./cmd/pebble ./internal/repository ./internal/storev2 -count=1`.
@@ -76,6 +91,9 @@ cannot interrupt an arbitrary blocking caller-supplied reader or kernel flush.
 | `FileInfo(ctx, manifestID)` | Verified manifest metadata length/raw SHA-256; not a replacement for `CopyFile` reconstruction checks. |
 | `ListRefs(ctx)` / `VerifyRefs(ctx)` | Verified catalog and shared bounded closure walk, including tags; returns owned targets / reachable-object count. No private-layout walking in the repository engine. |
 | `Head(ctx)` / `UpdateHead(ctx, expected, target)` | Bounded canonical symbolic HEAD; writer-locked CAS, graph-verified target and durable metadata publication, never a branch-ref write. |
+| `Inventory(ctx)` | Returns sorted unique typed IDs after validating every published loose and packed physical copy, including unreachable objects. Read-only; callers can `Verify` each ID for closure checks. |
+| `Pack(ctx, ids)` | Explicitly writes a deterministic immutable pack of selected objects, with compression only when smaller. Preserves all loose objects, IDs, manifests and refs. Returns the physical pack digest, not a logical object ID. |
+| `RebuildPackIndexes(ctx)` | Under the existing writer lock, validates every complete pack before publishing any rebuilt index/catalog; recovers interrupted publication without deleting data. |
 
 A structurally valid object may be stored before its dependencies arrive. This is
 not a claim that its graph/file is valid: only `Verify` or successful `UpdateRef`
@@ -109,6 +127,9 @@ root/.pebble/
   format                    exact bytes: pebble-format 2\n
   objects/KK-DIGEST.obj      complete canonical envelope, KK = 01..06
   refs/NAMEHASH.ref          complete ref metadata
+  pack-PACKHASH.pack        optional immutable physical container
+  pack-PACKHASH.idx         checksummed derived index
+  pack-catalog              checksummed derived pack inventory
   write.lock                transient exclusive writer lock
 ```
 
@@ -177,6 +198,99 @@ recovery decision. Initializers additionally use `.pebble-init.lock` in the empt
 root and an unpublished staging directory. Failed/incomplete initialization is
 not repaired or reclassified as a new repository; inspect it manually. Do not
 convert a v1 directory by adding the marker.
+
+## PB-07: physical packs and recovery
+
+Pack metadata is optional in format 2. `Init`, `Open` and ordinary loose-object
+reads do not create it; `Pack` and `RebuildPackIndexes` explicitly publish flat
+`pack-*` files in the existing `.pebble` directory. No new-directory barrier is
+needed, including after an uncertain Windows publication result.
+Older loose-only repositories remain readable without a marker or ID change.
+There is no removal/reclamation API. Only disposable tests remove loose copies
+to establish that reopened reads genuinely use packs.
+
+All physical integers are big-endian. Pack version 1 is:
+
+```
+"PBPACK\x00\x01" || count:u32 ||
+  repeated(kind:u8 || logical_digest:32 || codec:u8 ||
+           canonical_envelope_length:u64 || stored_length:u64 || stored_bytes) ||
+SHA256(all preceding pack bytes):32
+```
+
+Records are strictly ordered by kind and logical digest; duplicates are errors.
+Codec 0 stores the canonical envelope verbatim; codec 1 stores one zlib stream
+containing that same envelope. Compression is selected only when smaller.
+`PACKHASH` is the final checksum in lowercase hex. It addresses the physical
+container, not its logical objects. Typed IDs still hash the exact original
+`PB2` envelope; refs, ordered manifest links and whole-file checksums are unchanged.
+Reconstructed envelopes pass the existing typed schema, length, EOF and address
+validator. Decompression is bounded to the declared raw length plus one byte;
+zlib checksum failures, extra streams/trailing bytes and declared length mismatches
+are errors, not successful short files.
+
+An index is `"PBINDX\x00\x01" || count:u32 || PACKHASH:32 || entries ||
+SHA256(prefix):32`. Each 58-byte entry is the record's typed ID (33 bytes),
+codec (1), raw length (8), stored length (8), and absolute data offset (8).
+Reads check the whole pack checksum and framing and compare the bounded index
+with the exact derived entries before trusting it. A missing or corrupt ordinary
+index triggers complete canonical pack validation and in-memory reconstruction,
+never an implicit disk write. Special files and filesystem access/I/O errors
+are not disposable index corruption. This conservative implementation scans
+compressed pack bytes per lookup; it does not claim constant-time indexed I/O
+or cache validation across external file modifications.
+
+The catalog is `"PBCATL\x00\x01" || count:u32 || sorted PACKHASH:32 entries ||
+SHA256(prefix):32`. Complete `.pack` files are the recovery source of truth.
+A missing catalog, or a valid older catalog omitting a newly published pack, is
+recoverable. A catalog claiming a missing pack, invalid checksum/version, orphan
+index, unexpected published `pack-*` filename or special file fails closed on reads.
+Explicit rebuild can replace damaged ordinary derived catalog/index bytes.
+Unpublished ordinary `.pebble-tmp-*` files are ignored, never reclaimed here.
+
+Publication under the existing exclusive writer lock:
+
+1. Validate selected canonical objects and all existing packs; stage a bounded
+   complete pack and checksum.
+2. Sync/close/publish the pack through `finish` and the existing actual platform
+   namespace barrier. No index can reference a partially written pack.
+3. Validate **all** complete packs and every logical record before publishing any
+   derived index. Reaffirm the pack file/namespace barrier, publish its index,
+   then publish the catalog last. Every file uses the same sync/close/atomic
+   publication/error boundaries as loose objects and refs.
+4. Only after all barriers succeed, memoize packed object durability. Every ref
+   publication repeats real pack, index and catalog barriers before publishing
+   the ref, including when loose copies remain or this handle published earlier.
+   This conservative physical barrier is not skipped by the loose-object cache
+   and does not manufacture loose fallback copies.
+
+Interruption may leave a complete pack without its index/catalog. Read-only reopen
+can reconstruct its index in memory; explicit rebuild or the identical `Pack`
+retry verifies and republishes the durable metadata. A failed barrier is propagated,
+including `ErrPublicationUncertain` when publication may have happened. Existing
+refs remain unchanged on failed closure barriers. Never steal a stale lock:
+confirm process exit, inspect/verify, then make an explicit recovery decision.
+Rebuild validates all packs first, so corruption cannot install a false index
+for an earlier valid pack. It does not repair corrupt primary pack bytes.
+
+Local physical policy: at most 1 GiB per pack, 1,024 packs, 100,000 aggregate
+physical packed records, canonical per-kind raw limits, stored records bounded
+by raw length plus 64 KiB, and bounded directory/index/catalog input. Raw records
+stream from bounded file sections; zlib uses a 32 KiB byte-reader whose read-ahead
+remains visible to trailing-byte checks. Packing reuses one pair of bounded
+raw/compressed object buffers and one compressor, not a whole-pack buffer.
+Duplicate copies across packs are allowed and counted toward the physical limit;
+duplicates within a pack are rejected. `Inventory` validates every copy instead
+of hiding a corrupt packed duplicate behind a good loose object.
+
+The pack tests use the real PB-02 noisy/compressed PNG/JPEG/gzip/ZIP corpus, raw
+and zlib records, byte-exact pack-only reopen, frozen graph/ref fixtures, missing
+and checksum/offset-corrupt indexes, adversarial checksummed records, injected
+actual publication boundaries and child-process exits after pack/index/catalog
+publication. Child exits exercise process interruption, **not** power failure.
+The existing Windows local-NTFS/POSIX durability contracts above still apply;
+hardware/controller persistence and independent OS crash qualification remain
+unproven by these tests.
 
 ## Resource policy
 

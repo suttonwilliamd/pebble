@@ -14,11 +14,14 @@ and independent backups while dogfooding.
 - Checkout refuses dirty tracked files, untracked/ignored file collisions, unsafe
   paths and corrupt target objects before changing files.
 - Explicit single-file recovery from HEAD with `pebble restore <file>`.
-- Object integrity verification with `pebble fsck`.
+- Integrity verification of every stored object/copy and all refs with `pebble fsck`,
+  including unreachable loose/packed objects and complete dependency closure.
 - Repository discovery from subdirectories; explicit initialization; writer locks
   and atomic individual metadata/object writes.
 - Format2 CLI commits stream text and binaries through ROCK chunking and immutable
   paged manifests; checkout/restore verify staged raw bytes before replacement.
+- Store API packs provide checksummed compressed physical storage and rebuildable
+  indexes without changing typed IDs, file revisions, or refs.
 - Experimental legacy-v1-only `pebbled` server/website and authenticated push/fetch.
   New format2 repositories are explicitly rejected by this protocol.
 
@@ -30,7 +33,7 @@ and independent backups while dogfooding.
   explicit checkout. Pebble cannot push to GitHub's Git endpoints.
   The old `internal/remote` prototype is not mounted or used by the new server.
 - Merge/combine CLI, Git import/export, clone, staging, diff, branch deletion.
-- Format2 remote sync, explicit v1 migration, compression and GC. Streaming
+- Format2 remote sync, explicit v1 migration and GC. Streaming
   storage does not yet establish large-binary scalability or improvements over Git.
 - Symlinks/special files and empty directories in snapshots. Non-ignored symlinks
   and special files cause an error rather than being silently lost.

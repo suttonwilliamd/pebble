@@ -40,7 +40,7 @@ Usage:
   pebble restore <file>           Discard edits to one file, restoring HEAD
   pebble push <url> [branch]       Push HEAD to a remote branch (default: current)
   pebble fetch <url> [branch]      Fetch into incoming/<branch> (default: main)
-  pebble fsck                     Verify all reachable objects
+  pebble fsck                     Verify all stored objects and references
   pebble help                     Show this help
 
 Identity: set PEBBLE_AUTHOR and PEBBLE_EMAIL before committing.
@@ -216,7 +216,7 @@ func run(args []string, cwd string, w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "Verified %d reachable objects\n", n)
+		fmt.Fprintf(w, "Verified %d stored objects and all references\n", n)
 	}
 	return nil
 }

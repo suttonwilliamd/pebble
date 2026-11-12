@@ -197,6 +197,9 @@ func TestStageDiscardsLateChecksumFailure(t *testing.T) {
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("provisional output retained: %v %v", entries, err)
 	}
+	if _, err = r.Verify(); err == nil {
+		t.Fatal("fsck ignored an unreachable manifest with an invalid raw checksum")
+	}
 	write(t, r.root, "precious", []byte("unchanged"))
 	if err = r.Restore("precious"); err == nil {
 		t.Fatal("untracked restore accepted")
