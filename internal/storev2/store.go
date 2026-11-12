@@ -372,11 +372,23 @@ func (s *Store) load(ctx context.Context, id ID, wireOut, payloadOut io.Writer, 
 	f, err := regular(s.objectPath(id))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			n, found, packErr := s.packed(ctx, id, wireOut, payloadOut, buffer, budget)
+			if packErr != nil {
+				return nil, corrupt(id, packErr)
+			}
+			if found {
+				return n, nil
+			}
 			return nil, pe.Wrap(pe.ErrCodeObjectNotFound, "v2 object "+id.String(), err)
 		}
 		return nil, corrupt(id, err)
 	}
 	defer func() { err = errors.Join(err, f.Close()) }()
+	// Validate packed copies too: a good loose representation must not mask a
+	// corrupt published pack or a misaddressed duplicate.
+	if _, _, err = s.packed(ctx, id, nil, nil, buffer, budget); err != nil {
+		return nil, corrupt(id, err)
+	}
 	n, err := inspect(ctx, id, f, wireOut, payloadOut, buffer, budget)
 	if err != nil {
 		return nil, corrupt(id, err)
@@ -404,6 +416,10 @@ func (s *Store) Put(ctx context.Context, id ID, source io.Reader) (err error) {
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return storageError("inspect existing object", err)
+	} else {
+		if _, _, err = s.packed(ctx, id, nil, nil, buffer[:], nil); err != nil {
+			return corrupt(id, err)
+		}
 	}
 	f, err := os.CreateTemp(filepath.Join(s.meta, "objects"), tempPrefix)
 	if err != nil {
@@ -508,6 +524,9 @@ func (s *Store) rememberDurable(id ID) {
 func (s *Store) reaffirm(ctx context.Context, id ID, buffer []byte, budget *uint64) error {
 	source, err := regular(s.objectPath(id))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return s.reaffirmPacked(ctx, id, buffer, budget)
+		}
 		return corrupt(id, err)
 	}
 	defer source.Close()
