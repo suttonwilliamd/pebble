@@ -202,11 +202,7 @@ func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead
 		// Original bytes themselves are atomically moved into the retained slot.
 		// Flush them before intent: restore's dirty original may not be in the store.
 		if original != nil {
-			f, err := os.OpenFile(p, os.O_RDWR, 0)
-			if err != nil {
-				return err
-			}
-			if err = errors.Join(f.Sync(), f.Close()); err != nil {
+			if err = syncOriginal(p); err != nil {
 				return err
 			}
 		}

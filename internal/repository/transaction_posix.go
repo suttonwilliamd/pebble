@@ -4,11 +4,22 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
 )
+
+func syncOriginal(path string) error {
+	// fsync accepts a read-only descriptor on POSIX. Replacement only needs a
+	// readable original and writable parent, not write permission on the file.
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
+}
 
 func filesystemIdentity(path string) (string, error) {
 	info, err := os.Lstat(path)

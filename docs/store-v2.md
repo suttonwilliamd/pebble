@@ -28,6 +28,10 @@ Original files are synced before intent, then atomically moved into retained
 `old-*` slots; verified targets move out of `new-*` slots without replacement.
 Directory creation is likewise a recorded, no-replace directory move. These
 identities and locations encode progress without a mutable last-step counter.
+POSIX originals are synced through read-only descriptors: a readable `0444` file
+or `0555` executable does not need file-write permission for checkout/restore
+when the parent is writable. Windows retains its writable-handle requirement for
+`FlushFileBuffers`; no sync error is suppressed on either platform.
 
 `Repository.CheckoutContext`, `RestoreContext` and `Recover(context.Context)`
 support cancellation. Existing Checkout/Restore signatures remain. Reopen is
@@ -77,6 +81,12 @@ case aliases, and corrupt/incomplete/unsupported journals. Existing executable
 tests cover packed mixed binary/compressed/repeated-path histories and preflight
 dirty/untracked/corrupt-source protection. Validation results are reported per
 toolchain/platform separately from remote CI; process exits do not cut power.
+The dedicated Linux/macOS CI step exercises read-only clean/dirty originals and
+unchanged Keep files with real unprivileged permission denial, asserting exact
+bytes and HEAD/index coherence. `PEBBLE_REQUIRE_UNPRIVILEGED=1` makes a root or
+write-override environment fail that step rather than silently skip. Ordinary
+Windows/root runs explicitly skip this POSIX permission proof; their other
+recovery checks are not a substitute for native Linux/macOS results.
 
 ## PB-08: explicit verified v1 migration
 

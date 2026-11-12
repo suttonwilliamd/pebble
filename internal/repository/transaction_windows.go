@@ -4,9 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"golang.org/x/sys/windows"
+	"os"
 	"path/filepath"
+
+	"golang.org/x/sys/windows"
 )
+
+func syncOriginal(path string) error {
+	// Windows FlushFileBuffers requires write access; do not weaken the barrier.
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
+}
 
 func filesystemIdentity(path string) (string, error) {
 	p, err := windows.UTF16PtrFromString(`\\?\` + path)
