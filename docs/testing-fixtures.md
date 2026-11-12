@@ -1,8 +1,8 @@
 # Disposable fixtures and shipped-behavior baselines (PB-02)
 
-These inputs qualify the **current shipped APIs**, not a v2 implementation.
-ROCK is still separate from snapshot/CLI commits. No v2 encoding, migration or
-performance claim is defined here; PB-01 owns canonical v2 wire fixtures.
+The original PB-02 measurements below qualify the then-shipped legacy APIs and
+the separate ROCK pathname-index library; they are historical, not current v2
+performance claims. PB-01 owns canonical v2 wire fixtures.
 
 ## Ownership and safety
 
@@ -365,3 +365,23 @@ overriding `GOTOOLCHAIN`; the observed executable version was Go 1.21.13.
 The reproduction recipes above explicitly set `GOTOOLCHAIN=local` to prevent
 downloads. The targeted JPEG follow-up and Go 1.27.3 final checks used that
 override in the executed commands.
+
+## PB-08 migration qualification additions
+
+`internal/testfixture/v1` copies frozen compatibility payloads into caller-owned
+temporary roots, then generates deterministic shared-ancestor/divergent branches
+and PB-02 mixed/repeated-path histories using shipped v1 snapshot structs and
+object storage rules. Checked-in fixture directories are never migration roots.
+Working sentinels and an unrelated index cache prove conversion uses stored history.
+
+`TestMigration*` and `TestExecutableMigration` compare restored bytes/checksums,
+identity/date/message/parent/tree/ref mappings and complete selected closure.
+Source fingerprints include bytes, refs/HEAD, working state, modes, directory
+entries and modification times; access times are excluded because reads may update
+them. PB-02 fail-after readers produce truncated on-disk envelope fixtures.
+Other cases cover missing/corrupt/oversized objects, unsupported metadata/modes,
+empty history, unsafe paths/aliases/overlap, existing destinations, cancellation,
+competing publication and process termination before destination installation.
+Writable repositories/destinations and interrupted stages belong to test temp
+directories, never `test_dir`, code checkouts as input, user repositories or services.
+

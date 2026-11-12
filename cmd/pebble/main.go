@@ -41,6 +41,7 @@ Usage:
   pebble push <url> [branch]       Push HEAD to a remote branch (default: current)
   pebble fetch <url> [branch]      Fetch into incoming/<branch> (default: main)
   pebble fsck                     Verify all stored objects and references
+  pebble migrate-v1 <src> <dest>   Verify/copy v1 into a new separate v2 repository
   pebble help                     Show this help
 
 Identity: set PEBBLE_AUTHOR and PEBBLE_EMAIL before committing.
@@ -56,6 +57,9 @@ func run(args []string, cwd string, w io.Writer) error {
 	if cmd == "help" || cmd == "--help" || cmd == "-h" {
 		usage(w)
 		return nil
+	}
+	if cmd == "migrate-v1" {
+		return handleMigration(params, cwd, w)
 	}
 	if cmd == "pull" {
 		return errors.New("pull/merge is not implemented: use pebble fetch <url> [branch], inspect history, then checkout incoming/<branch>; keep Git and backups")
