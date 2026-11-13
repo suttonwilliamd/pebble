@@ -1,7 +1,6 @@
 package repository
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,16 +22,18 @@ func syncMigrationFiles(root string) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if _, err = readLink(path); err != nil {
+				return err
+			}
+			return syncOriginal(path)
+		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("nonregular migration stage file: %s", path)
 		}
-		// Windows FlushFileBuffers requires write access. These are our own
-		// newly created files; no write is made through this handle.
-		f, err := os.OpenFile(path, os.O_RDWR, 0)
-		if err != nil {
-			return err
-		}
-		return errors.Join(f.Sync(), f.Close())
+		// POSIX permits fsync through a read-only descriptor (including 0444
+		// preimages); Windows still requires writable FlushFileBuffers handles.
+		return syncOriginal(path)
 	})
 	return directories, err
 }

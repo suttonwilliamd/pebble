@@ -52,11 +52,10 @@ encrypted off-host backups and retention remain unimplemented.
 | Streaming chunker discarded its remaining bytes at EOF | Bounded buffering, shared batch boundaries, tail flush, invalid-config checks |
 | Error Is method failed go vet / standard error matching | Standard errors.Is support with code targets |
 
-A follow-up adds `pebble restore <file>` for explicit single-file recovery from
-HEAD, with corruption checks before overwriting and refusal of untracked paths,
-directories and symlinks. CI exposed Go 1.21's incompatibility with macOS 26's
-Mach-O loader; minimum-toolchain macOS testing is pinned to macOS 15, while the
-stable toolchain is tested on the latest macOS.
+A follow-up adds `pebble restore <file>` for explicit single-leaf recovery from
+HEAD. PB-10 preserves stored regular-file/link type and refuses directory
+descendant deletion or later conflicting edits. Minimum-toolchain macOS testing
+is pinned to macOS 15 for Go 1.21's loader compatibility; stable uses latest macOS.
 
 Regression tests cover local workflow round trips, complete CLI history, nested
 repository discovery, ignored/previously tracked files, duplicate branches,
@@ -64,12 +63,20 @@ corruption preflight, untracked collisions, unsafe refs/paths, writer locking,
 object tampering and streaming reconstruction/boundary equivalence. Symlink tests
 run where OS permissions allow them.
 
+Exhaustive fault/process-boundary matrices freeze one generated, quiescent
+two-commit fixture and copy it into independent roots with new files/inodes for
+each case. This avoids repeatedly publishing identical setup history; transaction
+calls, durable barriers, every discovered fault seam and recovery assertions
+remain real and unchanged. No hard links, shared writable fixture files, reduced
+case lists or increased CI timeout are used. Complete package tests execute
+serially to avoid overlapping CLI/repository/store filesystem-heavy workloads.
+
 ## Next implementation priorities
 
 1. **Recoverable checkout qualification.** PB-09 adds durable roll-forward intent
    and explicit `pebble recover`, with filesystem faults, process interruption,
-   cancellation and external-edit preservation regressions. File/directory
-   transitions remain PB-10; physical power-loss qualification remains outstanding.
+   cancellation and external-edit preservation regressions. PB-10 adds guarded
+   file/directory/link transitions; physical power-loss qualification is outstanding.
 2. **Wire ROCK into the snapshot format.** Versioned file manifests referencing
    chunks, streaming reads/writes, hash/type domain separation and a migration plan.
    Measure binary edits, insertion-heavy workloads, peak RSS and storage amplification.
@@ -91,9 +98,18 @@ Format2 local commands use streaming chunks/manifests and checksummed packs;
 legacy v1 remains whole-file JSON/base64. No staging, merge CLI, format2 remotes,
 GC or automatic migration. Checkout/restore have explicit journal recovery;
 they are not a guarantee against concurrent editors or arbitrary hardware failure.
-No symlinks, special files, empty directory snapshots or full permission/ACL
-preservation. Local metadata must be trusted. Keep files quiescent during
-snapshot/checkout/restore/recovery; later conflicting edits make recovery stop.
+Special files, empty directory snapshots and full permission/ACL preservation
+remain unsupported. Literal links require capability-aware readers/writers and
+actual host support; incapable hosts refuse materialization without copying
+targets or dropping historical metadata. Local metadata must be trusted. Keep
+files quiescent during snapshot/checkout/restore/recovery. Later public conflicts
+now trigger safe automatic abort: newer public entries stay untouched, original
+names return only when vacant/owned, and alternate versions plus discoverable
+receipts stay under `.pebble/recovery`. A fresh/repeated `recover` prints paths
+and the aborted result, not target success. Required permission/barrier failures
+remain pending until safe retry. This is not atomic multi-path/HEAD publication
+against arbitrary external writers, and process-kill proof is not power-loss
+qualification. Old journals may lack dirty preimages that old code never saved.
 
 The original README comparison that Git "stores full snapshots" and therefore
 necessarily bloats binaries was misleading: Git models snapshots but also uses

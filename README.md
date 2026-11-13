@@ -14,7 +14,10 @@ and independent backups while dogfooding.
 - Checkout refuses dirty tracked files, untracked/ignored file collisions, unsafe
   paths and corrupt target objects before changing files.
 - Explicit single-file recovery from HEAD with `pebble restore <file>`.
-- Durable checkout/restore journals and explicit `pebble recover` roll-forward.
+- Durable checkout/restore journals and explicit `pebble recover`, including
+  automatic no-clobber abort/reconciliation with discoverable preserved versions.
+- Literal symbolic-link targets/types, observable executable identity, and
+  recoverable file/directory transitions without deleting untracked children.
 - Integrity verification of every stored object/copy and all refs with `pebble fsck`,
   including unreachable loose/packed objects and complete dependency closure.
 - Repository discovery from subdirectories; explicit initialization; writer locks
@@ -38,10 +41,10 @@ and independent backups while dogfooding.
 - Merge/combine CLI, Git import/export, clone, staging, diff, branch deletion.
 - Format2 remote sync and GC. Streaming storage does not yet establish
   large-binary scalability or improvements over Git.
-- Symlinks/special files and empty directories in snapshots. Non-ignored symlinks
-  and special files cause an error rather than being silently lost.
-- Full filesystem metadata preservation: executable bit on Unix is supported;
-  ACLs, arbitrary permission bits, ownership and timestamps are not preserved.
+- Special files and empty directories as standalone snapshot entries.
+- Full filesystem metadata preservation: executable identity and symbolic-link
+  type/target are supported; ACLs, arbitrary permission bits, ownership and
+  timestamps are not preserved. Unsupported materialization fails explicitly.
 
 See [the dogfood evaluation and next priorities](docs/dogfood-readiness.md) and the
 [longer-term roadmap](docs/next-git-roadmap.md). Older design/checklist documents
@@ -106,17 +109,32 @@ pebble fsck
 
 To undo edits or recover a deleted tracked file, run `pebble restore path/to/file`.
 **This explicitly discards that file's uncommitted contents.** It restores HEAD
-without changing history and refuses untracked paths, directories and symlinks.
+without changing history and restores the stored regular-file or link type.
+It does not authorize discarding a nonempty directory or later external edits.
 
 Commits include **all non-ignored files**, additions and deletions; there is no
 staging area. Unchanged commits are rejected. Status uses committed HEAD, not an
 index cache. Untracked files may survive checkout unless they collide with a
-target file, in which case checkout refuses unless contents and executable mode
-are identical (then the existing file is adopted without rewriting).
-File/directory transitions are currently rejected; empty directories left by
-checkout are harmless.
+target leaf, in which case checkout refuses unless literal bytes and observable
+type/mode are identical (then the existing identity is adopted without rewriting).
+File/directory transitions retain original leaves and verified empty blocking
+directories in the journal; untracked children, including empty subdirectories,
+are refused rather than recursively removed.
 Create the first commit before creating another branch. `log` follows all ordered
 parents (first-parent first), displaying each reachable commit once.
+
+New repositories carry a `filesystem-v1` capability marker. Existing format2
+repositories remain readable and support regular/executable history without
+automatic upgrade. To deliberately permit link entries, back up the repository
+and run `pebble enable-filesystem`. This changes only the durable capability
+marker, not objects, IDs, refs or working bytes. It excludes incompatible older
+writers and refuses active cooperating writers or pending recovery. This protocol
+coordinates PB-09's persistent guards, not arbitrary third-party/older lock
+protocols. The marker does not grant Windows link privileges or executable-bit
+support: an incapable host refuses checkout/restore before working mutation.
+Link target bytes are never dereferenced or normalized. Windows captures the
+authoritative substitute target/flags, not its display label. Ambiguous cross-host
+target spellings fail explicitly; see the [target contract](docs/contracts/v2.md#3-trees-commits-and-tags).
 
 ### Explicit legacy v1 migration
 
@@ -167,24 +185,45 @@ Review `pebble status` for secrets before committing; `.gitignore` is not read.
   serialize cooperating Pebble processes, not editors. Metadata is locally trusted;
   do not open a malicious `.pebble` directory or mix old/new Pebble writers.
 - After interruption, back up the entire directory, run `pebble fsck`, then
-  `pebble recover`. Reopening never silently mutates files. Recovery finishes the
-  original checkout/restore, not a new command or an automatic rollback.
+  `pebble recover`. Reopening is read-only. An unchanged valid transaction rolls
+  forward; later public edits instead trigger automatic safe abort/reconciliation.
+  **An aborted checkout/restore is not successful target publication.**
 - Pending `.pebble/worktree-journal` blocks commit, branch, checkout, restore and
-  status. Target bytes and intent are durable before working paths change.
-  Replaced/removed originals (including restore's discarded edits) stay in
-  `old-*` slots until completion. Do not edit/delete recovery files.
-- Recovery checks recorded filesystem identities, bytes, modes and directory
-  spellings. Later edits, replacements (even identical bytes), untracked collisions,
-  aliases, changed branches, missing/corrupt/unsupported intent or barrier errors
-  fail closed. Preserve the journal and files for inspection; do not force recovery.
+  status. Version-3 journals durably copy leaves the engine may move (including
+  restore's dirty contents) before mutation; native originals and empty blocking
+  directories are also retained during moves. Do not edit/delete active recovery
+  material.
+- Recovery leaves newer public entries untouched. It returns displaced originals
+  to vacant, identity-verified canonical names without replacement. If a newer
+  entry or missing/rebound parent owns that namespace, it automatically preserves
+  alternate versions under `.pebble/recovery/archives/<transaction>/`.
+  Durable receipts under `.pebble/recovery/receipts/` record exact paths, prior and
+  requested commit IDs and the abort reason. Every `pebble recover`, including
+  after process death following intent retirement, prints those paths and the
+  aborted-operation result. No manual filename move is needed to clear an abort.
+  Archives use existing metadata exclusion, not new user-path ignore rules.
+- Required repair or durability writes denied by permissions/inaccessible roots
+  remain pending with the actual OS error; recovery never chmods, escalates or
+  spins. Restore access and rerun `recover`; it resumes idempotently without
+  overwriting intervening edits. Corrupt/unsupported records, changed history
+  pins or lost legacy preimages likewise never become false success.
+  Supported old v1/v2 replay remains available. An explicit conflicting recovery
+  preserves the exact old envelope before a local v3 abort checkpoint. Missing
+  originals may be reconstructed from matching pinned history; unknown old dirty
+  bytes overwritten before old code saved them cannot be recreated.
+- POSIX cannot predicate rename on a source inode. A final-window substitution
+  may temporarily move a public name before detection. Exclusive reversal and
+  automatic reconciliation preserve versions, but do not make arbitrary external
+  namespace edits or all paths plus HEAD atomic. A newer canonical entry is never
+  replaced to pretend the original name was restored.
 - New persistent `.pebble/worktree.guard` and `write.guard` use OS process locks,
   released on exit. Never unlink guard files. Legacy `worktree.lock`/`write.lock`
   markers still require manual inspection and confirmation no old writer is live.
   Interrupted initialization also needs manual inspection, not retry/reset.
 - Successful completion means files and symbolic HEAD have passed platform
   durability barriers. V2 has no mutable staging index: status derives from HEAD.
-  Process-kill tests are not hardware power-loss qualification. File/directory
-  transitions, symlinks and arbitrary concurrent filesystem mutation remain unsupported.
+  Process-kill tests are not hardware power-loss qualification. Keep editors
+  quiescent; no force command or unconditional concurrent-editor guarantee exists.
 
 ## Remote test service
 

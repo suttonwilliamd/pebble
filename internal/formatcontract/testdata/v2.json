@@ -1281,10 +1281,10 @@
     },
     {
       "name": "tree-bad-mode",
-      "note": "Only ordinary/executable mode supported.",
-      "wire_hex": "5042320004000000000000002b0000000100000001610203b463bfe09da67fc6589c4b15731806948cf5602dc002921bb665bcc2cab0de59",
+      "note": "PB-10 extends modes 2/3 for links; mode 4 remains invalid.",
+      "wire_hex": "5042320004000000000000002b0000000100000001610403b463bfe09da67fc6589c4b15731806948cf5602dc002921bb665bcc2cab0de59",
       "error": "mode",
-      "id": "pv2:tree:sha256:7c83bcf195f5ef9e4ce52a5a188e1427c63ad31c02480f336d31d2b3ac136e8f",
+      "id": "pv2:tree:sha256:65169e87cd52f0121014cf09deca6670c1294e94109893952601348e36988d80",
       "dependencies": [
         "manifest-old"
       ]
@@ -1749,6 +1749,45 @@
       "dependencies": [
         "manifest-new"
       ]
+    },
+    {
+      "name": "tree-symlink",
+      "note": "PB-10 additive mode 2: exact literal target bytes use the existing manifest graph.",
+      "wire_hex": "5042320004000000000000002b0000000100000001610203b463bfe09da67fc6589c4b15731806948cf5602dc002921bb665bcc2cab0de59",
+      "error": "",
+      "id": "pv2:tree:sha256:7c83bcf195f5ef9e4ce52a5a188e1427c63ad31c02480f336d31d2b3ac136e8f",
+      "dependencies": ["manifest-old"]
+    },
+    {
+      "name": "tree-directory-link",
+      "note": "PB-10 additive mode 3 preserves the directory-link hint even when the target is absent.",
+      "wire_hex": "5042320004000000000000002b0000000100000001610303b463bfe09da67fc6589c4b15731806948cf5602dc002921bb665bcc2cab0de59",
+      "error": "",
+      "id": "pv2:tree:sha256:9d2441ffda7ec32ca9ffa088d9235bc46d17fd10bfd1809554508f46a7c1be90",
+      "dependencies": ["manifest-old"]
+    },
+    {
+      "name": "marker-filesystem-v1",
+      "note": "PB-10 capability marker excludes incompatible old writers without rewriting any objects.",
+      "wire_hex": "706562626c652d666f726d617420320a72657175697265732066696c6573797374656d2d76310a",
+      "error": "",
+      "family": "marker"
+    },
+    {
+      "name": "tree-link-empty-target",
+      "note": "A symbolic link cannot silently materialize an empty target.",
+      "wire_hex": "5042320004000000000000002b00000001000000016102037eaf47406efa5569a4bf25f522fe1b871a1a7de402f0805939620b00ae499225",
+      "error": "link-target",
+      "id": "pv2:tree:sha256:b9db7a5b3fa30eb53965874d89107eb2ebfc786a3207ee6de2dea37467149fd3",
+      "dependencies": ["manifest-empty"]
+    },
+    {
+      "name": "tree-link-nul-target",
+      "note": "Literal link targets cannot contain NUL, unlike ordinary file bytes.",
+      "wire_hex": "5042320004000000000000002b00000001000000016102032ff254753031a53c067e376f65847c95dd346e525eb1e0fa776b089711be9f79",
+      "error": "link-target",
+      "id": "pv2:tree:sha256:05855e020deac2b35b9bc6751117f329118190f8d1554a7dd8232963e49000dd",
+      "dependencies": ["manifest-new"]
     }
   ]
 }

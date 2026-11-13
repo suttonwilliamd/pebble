@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -66,6 +67,79 @@ func newRecoveryFixture(t *testing.T) recoveryFixture {
 		write(t, r.root, name, data)
 	}
 	return recoveryFixture{r, before, after, old, target}
+}
+
+// Freeze only generated, quiescent setup, not transaction state. Each boundary
+// still gets independent files/inodes and runs the real publication/recovery
+// paths; rebuilding identical commit graphs hundreds of times adds no coverage.
+func frozenRecoveryFixtures(t *testing.T) func(*testing.T) recoveryFixture {
+	t.Helper()
+	seed := newRecoveryFixture(t)
+	type entry struct {
+		name string
+		mode os.FileMode
+		data []byte
+	}
+	var entries []entry
+	err := filepath.WalkDir(seed.r.root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == seed.r.root {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		name, err := filepath.Rel(seed.r.root, path)
+		if err != nil {
+			return err
+		}
+		e := entry{name: name, mode: info.Mode()}
+		if !d.IsDir() {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("nonregular generated fixture entry %s", name)
+			}
+			e.data, err = os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+		}
+		entries = append(entries, e)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return func(t *testing.T) recoveryFixture {
+		t.Helper()
+		root := t.TempDir()
+		for _, e := range entries {
+			path := filepath.Join(root, e.name)
+			if e.mode.IsDir() {
+				if err := os.MkdirAll(path, e.mode.Perm()); err != nil {
+					t.Fatal(err)
+				}
+				continue
+			}
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, e.mode.Perm())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, writeErr := f.Write(e.data)
+			syncErr := f.Sync()
+			closeErr := f.Close()
+			if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r, err := Open(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return recoveryFixture{r, seed.before, seed.after, seed.old, seed.target}
+	}
 }
 func assertRecoveryState(t *testing.T, f recoveryFixture, after bool) {
 	t.Helper()
@@ -132,10 +206,11 @@ func checkoutBoundaries(t *testing.T) []string {
 }
 
 func TestCheckoutRecoveryEveryFaultBoundary(t *testing.T) {
+	fixture := frozenRecoveryFixtures(t)
 	stages := checkoutBoundaries(t)
 	for at, stage := range stages {
 		t.Run(fmt.Sprintf("%02d-%s", at+1, stage), func(t *testing.T) {
-			f := newRecoveryFixture(t)
+			f := fixture(t)
 			injected := errors.New("injected filesystem failure")
 			hit := 0
 			f.r.fault = func(_, _ string) error {
@@ -163,7 +238,7 @@ func TestCheckoutRecoveryEveryFaultBoundary(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			after := pending || stage == "complete-published" || stage == "complete-barrier" && runtime.GOOS != "windows"
+			after := pending || strings.HasPrefix(stage, "complete")
 			assertRecoveryState(t, f, after)
 		})
 	}
@@ -237,9 +312,10 @@ func interruptWorktree(t *testing.T, root string, env ...string) {
 	}
 }
 func TestCheckoutRecoveryEveryProcessBoundary(t *testing.T) {
+	fixture := frozenRecoveryFixtures(t)
 	for at, stage := range checkoutBoundaries(t) {
 		t.Run(fmt.Sprintf("%02d-%s", at+1, stage), func(t *testing.T) {
-			f := newRecoveryFixture(t)
+			f := fixture(t)
 			interruptWorktree(t, f.r.root, "PEBBLE_TEST_WORKTREE_AT="+strconv.Itoa(at+1))
 			pending := journalExists(t, f.r)
 			reopenRecovery(t, &f)
@@ -248,7 +324,7 @@ func TestCheckoutRecoveryEveryProcessBoundary(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			after := pending || stage == "complete-published" || stage == "complete-barrier" && runtime.GOOS != "windows"
+			after := pending || strings.HasPrefix(stage, "complete")
 			assertRecoveryState(t, f, after)
 		})
 	}
@@ -389,9 +465,45 @@ func TestRecoveryPreservesExternalEdits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			before := publicSnapshot(t, f.r.root)
+			var restored []string
+			switch which {
+			case "installed", "identical-replacement":
+				restored = []string{"removed"}
+			case "directory":
+				restored = []string{"a.bin", "removed"}
+			}
+			identities := map[string]string{}
+			plan, err := f.r.readIntent()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range restored {
+				for i, file := range plan.Files {
+					if file.Path == name {
+						identities[name], err = filesystemIdentity(filepath.Join(f.r.journalPath(), retainedName(i)))
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}
+			receipt := automaticAbort(t, f.r, head)
+			assertReconciledPublic(t, f.r, before, receipt, restored...)
+			for _, name := range restored {
+				got, err := os.ReadFile(filepath.Join(f.r.root, name))
+				if err != nil || !bytes.Equal(got, f.old[name]) {
+					t.Fatalf("automatic original restoration %s: %x %v", name, got, err)
+				}
+				if id, err := filesystemIdentity(filepath.Join(f.r.root, name)); err != nil || id != identities[name] {
+					t.Fatalf("automatic original inode %s: %s want %s: %v", name, id, identities[name], err)
+				}
+			}
+			preservedVersion(t, receipt, "a.bin", "original", f.old["a.bin"])
 			for i := 0; i < 2; i++ {
-				if err = f.r.Recover(context.Background()); err == nil {
-					t.Fatal("external edit overwritten or adopted")
+				reopenRecovery(t, &f)
+				if err = f.r.Recover(context.Background()); err != nil {
+					t.Fatal(err)
 				}
 				got, err := os.ReadFile(filepath.Join(f.r.root, filepath.FromSlash(path)))
 				if err != nil || !bytes.Equal(got, precious) {
@@ -462,7 +574,12 @@ func TestRecoveryRejectsCorruptOrIncompleteJournal(t *testing.T) {
 			case "checksum":
 				data = bytes.Replace(data, []byte(`"SHA256":"`), []byte(`"SHA256":"bad`), 1)
 			case "unsupported":
-				data = bytes.Replace(data, []byte(`"Version":1`), []byte(`"Version":2`), 1)
+				var envelope journalEnvelope
+				if err = json.Unmarshal(data, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				envelope.Version = 0
+				data, err = json.Marshal(envelope)
 			case "missing-intent":
 				err = os.Remove(path)
 			case "missing-stage":
@@ -690,8 +807,9 @@ func TestRecoveryDoesNotOverwriteConcurrentHEAD(t *testing.T) {
 }
 
 func TestRestoreRecoveryEveryBoundary(t *testing.T) {
+	fixture := frozenRecoveryFixtures(t)
 	dirty := []byte("discard only after durable intent\x00\xff")
-	baseline := newRecoveryFixture(t)
+	baseline := fixture(t)
 	write(t, baseline.r.root, "a.bin", dirty)
 	var stages []string
 	baseline.r.fault = func(stage, path string) error {
@@ -706,7 +824,7 @@ func TestRestoreRecoveryEveryBoundary(t *testing.T) {
 	for _, terminate := range []bool{false, true} {
 		for at, stage := range stages {
 			t.Run(fmt.Sprintf("process-%t/%02d-%s", terminate, at+1, stage), func(t *testing.T) {
-				f := newRecoveryFixture(t)
+				f := fixture(t)
 				write(t, f.r.root, "a.bin", dirty)
 				if terminate {
 					interruptWorktree(t, f.r.root, "PEBBLE_TEST_WORKTREE_RESTORE=1", "PEBBLE_TEST_WORKTREE_AT="+strconv.Itoa(at+1))
@@ -724,7 +842,7 @@ func TestRestoreRecoveryEveryBoundary(t *testing.T) {
 						t.Fatalf("restore fault hidden: %v", err)
 					}
 				}
-				applied := journalExists(t, f.r) || stage == "complete-published" || stage == "complete-barrier" && runtime.GOOS != "windows"
+				applied := journalExists(t, f.r) || strings.HasPrefix(stage, "complete")
 				reopenRecovery(t, &f)
 				for i := 0; i < 2; i++ {
 					if err := f.r.Recover(context.Background()); err != nil {
@@ -754,7 +872,9 @@ func TestRestoreRecoveryEveryBoundary(t *testing.T) {
 
 func TestRecoveryCanBeInterruptedRepeatedly(t *testing.T) {
 	f := pauseCheckout(t, "journal-published")
-	for _, stage := range []string{"directory-published", "retain-published", "install-published", "head-published", "complete-published"} {
+	// Each resume advances to a later durable phase; retention now precedes
+	// directory installation rather than being interleaved with leaf installs.
+	for _, stage := range []string{"retain-published", "directory-published", "install-published", "head-published", "complete-published"} {
 		interruptWorktree(t, f.r.root, "PEBBLE_TEST_WORKTREE_RECOVER=1", "PEBBLE_TEST_WORKTREE_STAGE="+stage)
 		reopenRecovery(t, &f)
 	}

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,7 +21,7 @@ func TestUnsafeTreeCannotChangeWorkingFilesOrHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, paths := range [][]string{{"CON"}, {"Dir/a", "dir/b"}, {"A/b", "a"}} {
+	for index, paths := range [][]string{{"CON"}, {"COM¹"}, {"LPT².txt"}, {"CONIN$"}, {"CONOUT$"}, {"AUX .txt"}, {"Dir/a", "dir/b"}, {"A/b", "a"}} {
 		treeEntries := []storev2.TreeEntry{}
 		for _, path := range paths {
 			treeEntries = append(treeEntries, storev2.TreeEntry{Path: path, Manifest: entries[0].Manifest})
@@ -33,10 +34,7 @@ func TestUnsafeTreeCannotChangeWorkingFilesOrHead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		name := "bad"
-		if paths[0] != "CON" {
-			name = "bad-" + paths[0][:1]
-		}
+		name := fmt.Sprintf("bad-%d", index)
 		if err = r.store.UpdateRef(context.Background(), "heads/"+name, nil, bad); err != nil {
 			t.Fatal(err)
 		}
@@ -71,14 +69,16 @@ func TestSymlinkAndSpecialPathGuards(t *testing.T) {
 	if err = os.Symlink(outside, filepath.Join(r.root, "tracked")); err != nil {
 		t.Skipf("symlink creation unavailable: %v", err)
 	}
-	if _, err = r.Status(); err == nil {
-		t.Fatal("symlink status accepted")
+	changes, err := r.Status()
+	if err != nil || len(changes) != 1 || changes[0] != (Change{"M", "tracked"}) {
+		t.Fatalf("link type change not detected: %v %v", changes, err)
 	}
-	if _, err = r.Commit("bad", "A", "a@b"); err == nil {
-		t.Fatal("symlink commit accepted")
+	if err = r.Restore("tracked"); err != nil {
+		t.Fatal(err)
 	}
-	if err = r.Restore("tracked"); err == nil {
-		t.Fatal("symlink restore accepted")
+	info, err := os.Lstat(filepath.Join(r.root, "tracked"))
+	if err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("restore did not restore tracked leaf type: %v", err)
 	}
 	got, err := os.ReadFile(outside)
 	if err != nil || string(got) != "outside" {

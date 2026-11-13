@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/suttonwilliamd/pebble/internal/storev2"
@@ -22,24 +21,30 @@ import (
 const maxJournalBytes = 64 << 20
 
 type fileImage struct {
-	Identity   string
-	Size       uint64
-	Sum        [32]byte
-	Executable bool
-	Modified   int64
+	Identity      string
+	Size          uint64
+	Sum           [32]byte
+	Executable    bool
+	Symlink       bool
+	DirectoryLink bool
+	Modified      int64
 }
 type journalFile struct {
 	Path     string
 	Original *fileImage
 	Target   *fileImage
+	Backup   *fileImage `json:",omitempty"`
 	Keep     bool
 }
 type journalDirectory struct {
 	Path     string
 	Identity string
 	Staged   bool
+	Remove   bool
 }
 type worktreeIntent struct {
+	RecoveryID   string `json:",omitempty"`
+	version      int
 	RootIdentity string
 	Kind         string
 	RestorePath  string
@@ -84,8 +89,8 @@ func inspectImage(r *Repository, name string) (*fileImage, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("not a regular working file: %s", name)
+	if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+		return nil, fmt.Errorf("not a regular file or symbolic link: %s", name)
 	}
 	identity, err := filesystemIdentity(p)
 	if err != nil {
@@ -106,7 +111,7 @@ func inspectImage(r *Repository, name string) (*fileImage, error) {
 	if identity != after || !os.SameFile(info, final) || info.ModTime() != final.ModTime() || info.Mode() != final.Mode() || info.Size() != final.Size() {
 		return nil, fmt.Errorf("file changed while recording identity: %s", name)
 	}
-	return &fileImage{identity, hash.size, hash.sum, hash.executable, info.ModTime().UnixNano()}, nil
+	return &fileImage{Identity: identity, Size: hash.size, Sum: hash.sum, Executable: hash.executable, Symlink: hash.symlink, DirectoryLink: hash.directoryLink, Modified: info.ModTime().UnixNano()}, nil
 }
 func equalImage(a, b *fileImage) bool { return a != nil && b != nil && *a == *b }
 func strictJSON(data []byte, value any) error {
@@ -122,17 +127,9 @@ func strictJSON(data []byte, value any) error {
 	return nil
 }
 func writeIntent(dir string, plan *worktreeIntent) error {
-	data, err := json.Marshal(plan)
+	envelope, err := encodeWorktreeRecord(plan, 3)
 	if err != nil {
 		return err
-	}
-	sum := sha256.Sum256(data)
-	envelope, err := json.Marshal(journalEnvelope{1, data, hex.EncodeToString(sum[:])})
-	if err != nil {
-		return err
-	}
-	if len(envelope) > maxJournalBytes {
-		return fmt.Errorf("worktree journal exceeds %d bytes", maxJournalBytes)
 	}
 	// publishMigration subsequently syncs every stage file and directory.
 	return os.WriteFile(filepath.Join(dir, "intent.json"), envelope, 0600)
@@ -163,10 +160,11 @@ func (r *Repository) readIntent() (*worktreeIntent, error) {
 		return nil, err
 	}
 	sum := sha256.Sum256(envelope.Intent)
-	if envelope.Version != 1 || envelope.SHA256 != hex.EncodeToString(sum[:]) {
+	if envelope.Version < 1 || envelope.Version > 3 || envelope.SHA256 != hex.EncodeToString(sum[:]) {
 		return nil, fmt.Errorf("unsupported or corrupt worktree journal")
 	}
 	var plan worktreeIntent
+	plan.version = envelope.Version
 	if err = strictJSON(envelope.Intent, &plan); err != nil {
 		return nil, err
 	}
@@ -176,55 +174,6 @@ func (r *Repository) readIntent() (*worktreeIntent, error) {
 	return &plan, nil
 }
 
-func (r *Repository) prepareDirectories(stage string, plan *worktreeIntent) error {
-	var err error
-	plan.RootIdentity, err = filesystemIdentity(r.root)
-	if err != nil {
-		return err
-	}
-	parents := map[string]bool{}
-	for _, file := range plan.Files {
-		for parent := filepath.ToSlash(filepath.Dir(file.Path)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
-			parents[parent] = true
-		}
-	}
-	names := make([]string, 0, len(parents))
-	for name := range parents {
-		names = append(names, name)
-	}
-	sort.Slice(names, func(i, j int) bool {
-		a, b := strings.Count(names[i], "/"), strings.Count(names[j], "/")
-		if a != b {
-			return a < b
-		}
-		return names[i] < names[j]
-	})
-	for i, name := range names {
-		p, err := r.safePath(name)
-		if err != nil {
-			return err
-		}
-		info, err := os.Lstat(p)
-		staged := os.IsNotExist(err)
-		if err != nil && !staged {
-			return err
-		}
-		if staged {
-			p = filepath.Join(stage, directoryName(i))
-			if err = os.Mkdir(p, 0755); err != nil {
-				return err
-			}
-		} else if !info.IsDir() {
-			return fmt.Errorf("file blocks directory: %s", name)
-		}
-		identity, err := filesystemIdentity(p)
-		if err != nil {
-			return err
-		}
-		plan.Directories = append(plan.Directories, journalDirectory{name, identity, staged})
-	}
-	return nil
-}
 func imageMatchesEntry(s *storev2.Store, image *fileImage, entry storev2.TreeEntry) error {
 	if image == nil || image.Identity == "" {
 		return fmt.Errorf("missing file identity: %s", entry.Path)
@@ -233,7 +182,7 @@ func imageMatchesEntry(s *storev2.Store, image *fileImage, entry storev2.TreeEnt
 	if err != nil {
 		return err
 	}
-	if image.Size != length || image.Sum != sum || image.Executable != entry.Executable {
+	if image.Size != length || image.Sum != sum || measuresExecutable && image.Executable != entry.Executable || image.Symlink != entry.Symlink || measuresDirectoryLink && image.DirectoryLink != entry.DirectoryLink {
 		return fmt.Errorf("journal file does not match revision: %s", entry.Path)
 	}
 	return nil
@@ -245,6 +194,13 @@ func (r *Repository) validateIntent(plan *worktreeIntent) error {
 	}
 	if root != plan.RootIdentity {
 		return fmt.Errorf("journal belongs to another working tree")
+	}
+	if plan.version == 3 {
+		if !strings.HasPrefix(plan.RecoveryID, "worktree-stage-") || strings.ContainsAny(plan.RecoveryID, `/\`) {
+			return fmt.Errorf("invalid recovery transaction identity")
+		}
+	} else if plan.RecoveryID != "" {
+		return fmt.Errorf("legacy journal contains new recovery semantics")
 	}
 	if plan.Kind != "checkout" && plan.Kind != "restore" {
 		return fmt.Errorf("unsupported journal operation")
@@ -292,7 +248,6 @@ func (r *Repository) validateIntent(plan *worktreeIntent) error {
 	if len(plan.Files) != len(names) || len(plan.Files) > storev2.MaxGraphObjects {
 		return fmt.Errorf("incomplete journal file set")
 	}
-	entries := make([]storev2.TreeEntry, 0, len(plan.Files))
 	parents := map[string]bool{}
 	previous := ""
 	for _, file := range plan.Files {
@@ -300,14 +255,19 @@ func (r *Repository) validateIntent(plan *worktreeIntent) error {
 			return fmt.Errorf("invalid journal file ordering")
 		}
 		previous = file.Path
-		entries = append(entries, storev2.TreeEntry{Path: file.Path})
+		if err = validPath(file.Path); err != nil {
+			return err
+		}
 		for parent := filepath.ToSlash(filepath.Dir(file.Path)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
 			parents[parent] = true
 		}
-		for _, image := range []*fileImage{file.Original, file.Target} {
+		for _, image := range []*fileImage{file.Original, file.Target, file.Backup} {
 			if image != nil && image.Identity == "" {
 				return fmt.Errorf("empty journal identity")
 			}
+		}
+		if plan.version == 3 && !file.Keep && file.Original != nil && !sameImageContent(file.Backup, file.Original) || (file.Original == nil || file.Keep) && file.Backup != nil {
+			return fmt.Errorf("missing or inconsistent journal preimage: %s", file.Path)
 		}
 		if entry, ok := old[file.Path]; ok {
 			if err = imageMatchesEntry(r.store, file.Original, entry); err != nil {
@@ -327,15 +287,19 @@ func (r *Repository) validateIntent(plan *worktreeIntent) error {
 			return fmt.Errorf("invalid adopted file identity")
 		}
 	}
-	if err = validateEntries(entries); err != nil {
-		return err
-	}
-	if len(parents) != len(plan.Directories) {
-		return fmt.Errorf("incomplete journal directories")
-	}
 	seen := map[string]bool{}
 	for _, dir := range plan.Directories {
-		if !parents[dir.Path] || seen[dir.Path] || dir.Identity == "" {
+		removable := false
+		for name := range target {
+			if dir.Path == name || strings.HasPrefix(dir.Path, name+"/") {
+				removable = true
+				break
+			}
+		}
+		if err = validPath(dir.Path); err != nil {
+			return err
+		}
+		if seen[dir.Path] || dir.Identity == "" || dir.Staged && dir.Remove || dir.Remove && !removable || !parents[dir.Path] && !dir.Remove {
 			return fmt.Errorf("invalid journal directory")
 		}
 		parent := filepath.ToSlash(filepath.Dir(dir.Path))
@@ -343,44 +307,23 @@ func (r *Repository) validateIntent(plan *worktreeIntent) error {
 			return fmt.Errorf("unordered journal directories")
 		}
 		seen[dir.Path] = true
+		delete(parents, dir.Path)
+	}
+	if len(parents) != 0 {
+		return fmt.Errorf("incomplete journal directories")
 	}
 	return nil
 }
 
-func (r *Repository) inspectDirectories(stage string, plan *worktreeIntent) error {
-	for i, dir := range plan.Directories {
-		p, err := r.safePath(dir.Path)
-		if err != nil {
-			return err
-		}
-		info, err := os.Lstat(p)
-		if os.IsNotExist(err) && dir.Staged {
-			p = filepath.Join(stage, directoryName(i))
-			info, err = os.Lstat(p)
-		}
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("directory replaced: %s", dir.Path)
-		}
-		identity, err := filesystemIdentity(p)
-		if err != nil {
-			return err
-		}
-		if identity != dir.Identity {
-			return fmt.Errorf("external directory change: %s", dir.Path)
-		}
-		if p != filepath.Join(stage, directoryName(i)) && dir.Staged {
-			if _, err = os.Lstat(filepath.Join(stage, directoryName(i))); !os.IsNotExist(err) {
-				return fmt.Errorf("ambiguous staged directory: %s", dir.Path)
-			}
-		}
+func (r *Repository) inspectJournalFile(stage string, i int, file journalFile, plan *worktreeIntent) error {
+	backup, err := inspectImage(&Repository{root: stage}, preimageName(i))
+	if err != nil {
+		return err
 	}
-	return nil
-}
-func (r *Repository) inspectJournalFile(stage string, i int, file journalFile) error {
-	live, err := inspectImage(r, file.Path)
+	if file.Backup != nil && !equalImage(backup, file.Backup) || file.Backup == nil && backup != nil {
+		return fmt.Errorf("preimage recovery material changed: %s", file.Path)
+	}
+	live, err := r.inspectLiveImage(plan, file.Path)
 	if err != nil {
 		return err
 	}
@@ -426,7 +369,7 @@ func (r *Repository) inspectJournalFile(stage string, i int, file journalFile) e
 	}
 	return nil
 }
-func (r *Repository) inspectTransaction(stage string, plan *worktreeIntent) error {
+func (r *Repository) inspectHistory(plan *worktreeIntent) error {
 	head, err := r.GetHead()
 	if err != nil {
 		return err
@@ -434,10 +377,13 @@ func (r *Repository) inspectTransaction(stage string, plan *worktreeIntent) erro
 	if head != plan.BeforeHead && head != plan.AfterHead {
 		return fmt.Errorf("HEAD changed outside recovery")
 	}
-	for _, pin := range []struct {
+	for i, pin := range []struct {
 		name string
 		id   storev2.ID
 	}{{plan.BeforeHead, plan.BeforeID}, {plan.AfterHead, plan.AfterID}} {
+		if i == 1 && plan.BeforeHead == plan.AfterHead && plan.BeforeID == plan.AfterID {
+			continue
+		}
 		id, err := r.GetRef(pin.name)
 		if pin.id == (storev2.ID{}) && os.IsNotExist(err) && pin.name == "heads/main" {
 			continue
@@ -449,20 +395,36 @@ func (r *Repository) inspectTransaction(stage string, plan *worktreeIntent) erro
 			return fmt.Errorf("branch changed outside recovery: %s", pin.name)
 		}
 	}
-	if err = r.inspectDirectories(stage, plan); err != nil {
+	return nil
+}
+
+func (r *Repository) updateIntentHead(ctx context.Context, from, to string, plan *worktreeIntent) error {
+	before := storev2.HeadPin{Name: plan.BeforeHead, ID: plan.BeforeID}
+	if plan.BeforeHead == plan.AfterHead && plan.BeforeID == plan.AfterID {
+		return r.store.UpdateHead(ctx, from, to, before)
+	}
+	return r.store.UpdateHead(ctx, from, to, before,
+		storev2.HeadPin{Name: plan.AfterHead, ID: plan.AfterID})
+}
+func (r *Repository) inspectTransaction(stage string, plan *worktreeIntent) error {
+	if err := r.inspectHistory(plan); err != nil {
+		return err
+	}
+	if err := r.inspectDirectories(stage, plan); err != nil {
 		return err
 	}
 	for i, file := range plan.Files {
-		if err = r.inspectJournalFile(stage, i, file); err != nil {
+		if err := r.inspectJournalFile(stage, i, file, plan); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Recover explicitly resumes a pending operation. It never guesses ownership
-// from contents alone or clears legacy locks; unexpected changes fail closed.
-// Reopening is read-only; callers choose when to resume via this API/CLI.
+// Recover explicitly resumes an operation or safely aborts it when external
+// changes prevent replay. An abort preserves versions at discoverable paths;
+// it never grants authority to replace a subsequent external edit.
+// Reopening remains read-only; callers choose when to invoke recovery.
 func (r *Repository) Recover(ctx context.Context) (err error) {
 	unlock, err := r.operationLock()
 	if err != nil {
@@ -476,20 +438,87 @@ func (r *Repository) Recover(ctx context.Context) (err error) {
 	if os.IsNotExist(err) {
 		// A missing intent inside an existing journal is corruption, not completion.
 		if _, exists := os.Lstat(r.journalPath()); os.IsNotExist(exists) {
-			return nil
+			return r.finishPublishedRecoveries()
 		}
 	}
 	if err != nil {
 		return fmt.Errorf("recovery refused; preserve journal: %w", err)
 	}
-	return r.resumeWorktree(ctx, plan)
-}
-func (r *Repository) transactionMove(ctx context.Context, stage, source, target string) error {
-	if err := r.boundary(ctx, stage, target); err != nil {
+	if err = ctx.Err(); err != nil {
 		return err
 	}
-	if err := moveWorktree(source, target, func() error { return r.boundary(ctx, stage+"-barrier", target) }); err != nil {
+	var repair recoveryPlan
+	if err = readRecoveryRecord(r.journalPath(), "repair.json", &repair); err == nil {
+		return r.resumeRecovery(ctx, plan, &repair)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("reconciliation record refused: %w", err)
+	}
+	if err = r.inspectTransaction(r.journalPath(), plan); err != nil {
+		prepared, prepareErr := r.prepareRecovery(ctx, plan, err)
+		if prepareErr != nil {
+			return errors.Join(err, prepareErr)
+		}
+		return r.resumeRecovery(ctx, plan, prepared)
+	}
+	return r.resumeWorktree(ctx, plan)
+}
+func (r *Repository) transactionMove(ctx context.Context, stage, source, target string, image *fileImage, publicSource bool, ownership ...func() error) error {
+	identity, err := filesystemIdentity(source)
+	if err != nil {
 		return err
+	}
+	if image != nil && identity != image.Identity {
+		return fmt.Errorf("rename source ownership changed: %s", source)
+	}
+	parents := map[string]string{}
+	for _, path := range []string{filepath.Dir(source), filepath.Dir(target)} {
+		for {
+			id, err := filesystemIdentity(path)
+			if err != nil {
+				return err
+			}
+			parents[path] = id
+			next := filepath.Dir(path)
+			if next == path {
+				break
+			}
+			path = next
+		}
+	}
+	if err = r.boundary(ctx, stage, target); err != nil {
+		return err
+	}
+	parentsUnchanged := func() error {
+		for path, want := range parents {
+			got, err := filesystemIdentity(path)
+			if err != nil {
+				return err
+			}
+			if got != want {
+				return fmt.Errorf("namespace ownership changed: %s", path)
+			}
+		}
+		return nil
+	}
+	check := func() error {
+		if err := r.boundary(ctx, stage+"-anchored", target); err != nil {
+			return err
+		}
+		if err := parentsUnchanged(); err != nil {
+			return err
+		}
+		for _, verify := range ownership {
+			if err := verify(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err = anchoredMove(source, target, identity, image, publicSource, check,
+		func() error { return r.boundary(ctx, stage+"-rename", target) },
+		func() error { return r.boundary(ctx, stage+"-renamed", target) },
+		parentsUnchanged, func() error { return r.boundary(ctx, stage+"-barrier", target) }); err != nil {
+		return fmt.Errorf("%s namespace move: %w", stage, err)
 	}
 	return r.boundary(ctx, stage+"-published", target)
 }
@@ -497,6 +526,59 @@ func (r *Repository) resumeWorktree(ctx context.Context, plan *worktreeIntent) e
 	stage := r.journalPath()
 	if err := r.inspectTransaction(stage, plan); err != nil {
 		return err
+	}
+	check := func() error { return r.inspectTransaction(stage, plan) }
+	// Retain original leaves before any directory transition. No unlink/copy.
+	for i, file := range plan.Files {
+		if file.Keep || file.Original == nil {
+			continue
+		}
+		original := filepath.Join(stage, retainedName(i))
+		if _, err := os.Lstat(original); os.IsNotExist(err) {
+			if err = check(); err != nil {
+				return err
+			}
+			target, err := r.safePath(file.Path)
+			if err != nil {
+				return err
+			}
+			if err = r.transactionMove(ctx, "retain", target, original, file.Original, true, check); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+	}
+	// Move only verified empty directories, deepest first. Retained directories
+	// stay owned by the same immutable intent through interruption and retries.
+	for i := len(plan.Directories) - 1; i >= 0; i-- {
+		dir := plan.Directories[i]
+		if !dir.Remove {
+			continue
+		}
+		slot := filepath.Join(stage, retainedDirectoryName(i))
+		if _, err := os.Lstat(slot); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := check(); err != nil {
+			return err
+		}
+		p, err := r.safePath(dir.Path)
+		if err != nil {
+			return err
+		}
+		children, err := readDirectory(p)
+		if err != nil {
+			return err
+		}
+		if len(children) != 0 {
+			return fmt.Errorf("directory gained untracked children: %s", dir.Path)
+		}
+		if err = r.transactionMove(ctx, "retain-directory", p, slot, nil, true, check); err != nil {
+			return err
+		}
 	}
 	for i, dir := range plan.Directories {
 		if !dir.Staged {
@@ -508,50 +590,42 @@ func (r *Repository) resumeWorktree(ctx context.Context, plan *worktreeIntent) e
 		} else if err != nil {
 			return err
 		}
+		if err := check(); err != nil {
+			return err
+		}
 		target, err := r.safePath(dir.Path)
 		if err != nil {
 			return err
 		}
-		if err = r.transactionMove(ctx, "directory", source, target); err != nil {
+		if err = r.recordMove(ctx, plan, "directory", i, dir.Identity); err != nil {
+			return err
+		}
+		if err = r.transactionMove(ctx, "directory", source, target, nil, false, check); err != nil {
 			return err
 		}
 	}
 	for i, file := range plan.Files {
-		if err := r.inspectDirectories(stage, plan); err != nil {
-			return err
-		}
-		if err := r.inspectJournalFile(stage, i, file); err != nil {
-			return err
-		}
-		if file.Keep {
+		if file.Keep || file.Target == nil {
 			continue
+		}
+		source := filepath.Join(stage, stageName(i))
+		if _, err := os.Lstat(source); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := check(); err != nil {
+			return err
 		}
 		target, err := r.safePath(file.Path)
 		if err != nil {
 			return err
 		}
-		original := filepath.Join(stage, retainedName(i))
-		if file.Original != nil {
-			if _, err = os.Lstat(original); os.IsNotExist(err) {
-				if err = r.transactionMove(ctx, "retain", target, original); err != nil {
-					return err
-				}
-				if err = r.inspectJournalFile(stage, i, file); err != nil {
-					return err
-				}
-			} else if err != nil {
-				return err
-			}
+		if err = r.recordMove(ctx, plan, "install", i, file.Target.Identity); err != nil {
+			return err
 		}
-		if file.Target != nil {
-			source := filepath.Join(stage, stageName(i))
-			if _, err = os.Lstat(source); err == nil {
-				if err = r.transactionMove(ctx, "install", source, target); err != nil {
-					return err
-				}
-			} else if !os.IsNotExist(err) {
-				return err
-			}
+		if err = r.transactionMove(ctx, "install", source, target, file.Target, false, check); err != nil {
+			return err
 		}
 	}
 	if err := r.inspectTransaction(stage, plan); err != nil {
@@ -569,6 +643,9 @@ func (r *Repository) resumeWorktree(ctx context.Context, plan *worktreeIntent) e
 	if err := r.boundary(ctx, "head", plan.AfterHead); err != nil {
 		return err
 	}
+	if err := r.inspectTransaction(stage, plan); err != nil {
+		return err
+	}
 	head, err := r.GetHead()
 	if err != nil {
 		return err
@@ -577,7 +654,7 @@ func (r *Repository) resumeWorktree(ctx context.Context, plan *worktreeIntent) e
 		return fmt.Errorf("HEAD changed outside recovery")
 	}
 	// Identical retry republishes through the store's CAS and durability barrier.
-	if err = r.store.UpdateHead(ctx, head, plan.AfterHead); err != nil {
+	if err = r.updateIntentHead(ctx, head, plan.AfterHead, plan); err != nil {
 		return err
 	}
 	if err = r.boundary(ctx, "head-published", plan.AfterHead); err != nil {
@@ -595,7 +672,7 @@ func (r *Repository) resumeWorktree(ctx context.Context, plan *worktreeIntent) e
 	}
 	// Remove only after a durable rename retires the entire active journal.
 	// A cleanup interruption can leave private debris, never a partial active intent.
-	if err = r.transactionMove(ctx, "complete", stage, completed); err != nil {
+	if err = r.transactionMove(ctx, "complete", stage, completed, nil, false, check); err != nil {
 		return err
 	}
 	return os.RemoveAll(completed)

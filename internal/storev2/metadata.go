@@ -9,9 +9,11 @@ import (
 // TreeEntry binds a portable relative path to one immutable file revision.
 // Entries are supplied in canonical path order; constructors never reorder them.
 type TreeEntry struct {
-	Path       string
-	Executable bool
-	Manifest   ID
+	Path          string
+	Executable    bool
+	Symlink       bool
+	DirectoryLink bool
+	Manifest      ID
 }
 
 // CommitData preserves parent order and every frozen metadata field, including
@@ -40,6 +42,18 @@ func (s *Store) CreateTree(ctx context.Context, entries []TreeEntry) (ID, error)
 		return ID{}, invalid("limit")
 	}
 	size := 4
+	hasLinks := false
+	for _, e := range entries {
+		if e.DirectoryLink && !e.Symlink || e.Executable && e.Symlink {
+			return ID{}, invalid("mode")
+		}
+		hasLinks = hasLinks || e.Symlink
+	}
+	if hasLinks {
+		if err := s.requireFilesystem(); err != nil {
+			return ID{}, err
+		}
+	}
 	for _, e := range entries {
 		if len(e.Path) > 4096 || size > MaxMetadataBytes-38-len(e.Path) {
 			return ID{}, invalid("limit")
@@ -53,6 +67,12 @@ func (s *Store) CreateTree(ctx context.Context, entries []TreeEntry) (ID, error)
 		mode := byte(0)
 		if e.Executable {
 			mode = 1
+		}
+		if e.Symlink {
+			mode = 2
+			if e.DirectoryLink {
+				mode = 3
+			}
 		}
 		b = append(b, mode)
 		b = appendLink(b, e.Manifest)
@@ -99,7 +119,8 @@ func (s *Store) ReadTree(ctx context.Context, id ID) ([]TreeEntry, error) {
 	d := decoder{b: b}
 	entries := make([]TreeEntry, d.count(10000))
 	for i := range entries {
-		entries[i] = TreeEntry{Path: string(d.text(false)), Executable: d.u8() == 1, Manifest: d.link(Manifest)}
+		path, mode := string(d.text(false)), d.u8()
+		entries[i] = TreeEntry{Path: path, Executable: mode == 1, Symlink: mode >= 2, DirectoryLink: mode == 3, Manifest: d.link(Manifest)}
 	}
 	return entries, d.err
 }

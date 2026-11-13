@@ -10,8 +10,18 @@ import (
 
 const maxLength = uint64(1<<63 - 1)
 
+type linkTargetWriter struct{}
+
+func (linkTargetWriter) Write(p []byte) (int, error) {
+	if bytes.IndexByte(p, 0) >= 0 {
+		return 0, invalid("link-target")
+	}
+	return len(p), nil
+}
+
 type edge struct {
 	id     ID
+	mode   byte // Tree-only; occupies existing alignment padding before length.
 	length uint64
 }
 type node struct {
@@ -21,6 +31,7 @@ type node struct {
 	checksum [32]byte
 	edges    []edge
 	tagName  string
+	symlinks bool
 }
 
 // decoder records the first failure. Every read is bounded before indexing;
@@ -168,7 +179,7 @@ func parsePayload(kind Kind, payload []byte) (*node, error) {
 				break
 			}
 			total += length
-			n.edges = append(n.edges, edge{id, length})
+			n.edges = append(n.edges, edge{id: id, length: length})
 		}
 		if kind == Manifest {
 			d.require(total == n.total, "length")
@@ -198,8 +209,10 @@ func parsePayload(kind Kind, payload []byte) (*node, error) {
 			}
 			seen[path] = struct{}{}
 			previous = pathBytes
-			d.require(d.u8() <= 1, "mode")
-			n.edges = append(n.edges, edge{id: d.link(Manifest)})
+			mode := d.u8()
+			d.require(mode <= 3, "mode")
+			n.symlinks = n.symlinks || mode >= 2
+			n.edges = append(n.edges, edge{id: d.link(Manifest), mode: mode})
 		}
 	case Commit:
 		tree := d.link(Tree)

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,49 @@ func (r *Repository) stageFile(dir string, e storev2.TreeEntry) (string, error) 
 	return r.stageFileContext(context.Background(), dir, e)
 }
 func (r *Repository) stageFileContext(ctx context.Context, dir string, e storev2.TreeEntry) (_ string, err error) {
+	if e.Executable && !measuresExecutable {
+		return "", fmt.Errorf("host cannot materialize executable identity: %s; history preserved", e.Path)
+	}
+	if e.Symlink {
+		size, _, err := r.store.FileInfo(ctx, e.Manifest)
+		if err != nil {
+			return "", err
+		}
+		if size == 0 || size > maxLinkBytes {
+			return "", fmt.Errorf("unsupported symbolic-link target length: %s", e.Path)
+		}
+		var target bytes.Buffer
+		if err = r.store.CopyFile(ctx, e.Manifest, &target); err != nil {
+			return "", err
+		}
+		if err = validateMaterializableLink(target.String()); err != nil {
+			return "", err
+		}
+		f, err := os.CreateTemp(dir, "link-")
+		if err != nil {
+			return "", err
+		}
+		p := f.Name()
+		if err = errors.Join(f.Close(), os.Remove(p)); err != nil {
+			return "", err
+		}
+		if err = createLink(target.String(), p, e.DirectoryLink); err != nil {
+			return "", fmt.Errorf("host cannot create symbolic link %s: %w", e.Path, err)
+		}
+		link, err := readLink(p)
+		if err != nil || link.target != target.String() || measuresDirectoryLink && link.directory != e.DirectoryLink {
+			os.Remove(p)
+			return "", errors.Join(fmt.Errorf("host cannot preserve literal link target/type: %s", e.Path), err)
+		}
+		if err = r.boundary(ctx, "stage-sync", e.Path); err == nil {
+			err = syncOriginal(p)
+		}
+		if err != nil {
+			os.Remove(p)
+			return "", err
+		}
+		return p, nil
+	}
 	f, err := os.CreateTemp(dir, "file-")
 	if err != nil {
 		return "", err
@@ -49,7 +93,7 @@ func (r *Repository) matches(e storev2.TreeEntry) (bool, error) {
 		return false, err
 	}
 	length, sum, err := r.store.FileInfo(context.Background(), e.Manifest)
-	return err == nil && f.size == length && f.sum == sum && f.executable == e.Executable, err
+	return err == nil && f.size == length && f.sum == sum && (f.executable == e.Executable || !measuresExecutable && !f.symlink) && f.symlink == e.Symlink && (!measuresDirectoryLink || f.directoryLink == e.DirectoryLink), err
 }
 
 // Restore explicitly discards edits to one tracked file. After interruption,
@@ -77,8 +121,8 @@ func (r *Repository) RestoreContext(ctx context.Context, name string) (err error
 	return fmt.Errorf("path is not tracked at HEAD: %s", name)
 }
 
-// Checkout refuses tracked edits and conflicting untracked paths. File/directory
-// transitions remain unsupported; no user path changes before durable intent.
+// Checkout refuses tracked edits and conflicting untracked paths. File,
+// directory and link transitions publish only after a durable validated intent.
 func (r *Repository) Checkout(name string) error {
 	return r.CheckoutContext(context.Background(), name)
 }
@@ -125,6 +169,11 @@ func (r *Repository) CheckoutContext(ctx context.Context, name string) (err erro
 }
 
 func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead, afterHead string, beforeID, afterID storev2.ID, old, target []storev2.TreeEntry) (err error) {
+	for _, entry := range target {
+		if entry.Executable && !measuresExecutable {
+			return fmt.Errorf("host cannot materialize executable identity: %s; history preserved", entry.Path)
+		}
+	}
 	dir, err := os.MkdirTemp(filepath.Join(r.root, ".pebble"), "worktree-stage-")
 	if err != nil {
 		return err
@@ -134,7 +183,7 @@ func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead
 	if err = preflightFilesystemPaths(dir, target); err != nil {
 		return err
 	}
-	plan := worktreeIntent{Kind: kind, RestorePath: name, BeforeHead: beforeHead, AfterHead: afterHead, BeforeID: beforeID, AfterID: afterID}
+	plan := worktreeIntent{Kind: kind, RestorePath: name, BeforeHead: beforeHead, AfterHead: afterHead, BeforeID: beforeID, AfterID: afterID, RecoveryID: filepath.Base(dir), version: 3}
 	before, after := map[string]storev2.TreeEntry{}, map[string]storev2.TreeEntry{}
 	names := map[string]bool{}
 	for _, e := range old {
@@ -150,15 +199,18 @@ func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead
 		sorted = append(sorted, path)
 	}
 	sort.Strings(sorted)
+	for _, path := range sorted {
+		plan.Files = append(plan.Files, journalFile{Path: path})
+	}
+	if err = r.prepareDirectories(dir, &plan, target); err != nil {
+		return err
+	}
 	for i, path := range sorted {
 		if err = r.boundary(ctx, "prepare-file", path); err != nil {
 			return err
 		}
-		p, err := r.safePath(path)
-		if err != nil {
-			return err
-		}
-		original, err := inspectImage(r, path)
+		p := filepath.Join(r.root, filepath.FromSlash(path))
+		original, err := r.inspectLiveImage(&plan, path)
 		if err != nil {
 			return err
 		}
@@ -206,12 +258,28 @@ func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead
 				return err
 			}
 		}
-		plan.Files = append(plan.Files, file)
-	}
-	if err = r.prepareDirectories(dir, &plan); err != nil {
-		return err
+		if original != nil && !file.Keep {
+			backup, err := r.copyImage(ctx, path, dir, original)
+			if err != nil {
+				return err
+			}
+			if err = os.Rename(backup, filepath.Join(dir, preimageName(i))); err != nil {
+				return err
+			}
+			file.Backup, err = inspectImage(&Repository{root: dir}, preimageName(i))
+			if err != nil {
+				return err
+			}
+		}
+		plan.Files[i] = file
 	}
 	if err = r.validateIntent(&plan); err != nil {
+		return err
+	}
+	if err = r.inspectTransaction(dir, &plan); err != nil {
+		return err
+	}
+	if err = r.preflightPermissions(dir, &plan); err != nil {
 		return err
 	}
 	if err = r.inspectTransaction(dir, &plan); err != nil {

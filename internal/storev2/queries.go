@@ -85,11 +85,24 @@ func (s *Store) Head(ctx context.Context) (_ string, err error) {
 	return name, nil
 }
 
+// HeadPin binds a branch to its verified commit while publishing symbolic HEAD.
+// A zero ID pins absence (the unborn main case), never an arbitrary target.
+type HeadPin struct {
+	Name string
+	ID   ID
+}
+
 // UpdateHead uses exact symbolic compare-and-swap and verifies the destination.
 // Only an entirely unborn repository may point at an absent heads/main.
-func (s *Store) UpdateHead(ctx context.Context, expected, target string) (err error) {
+// Optional branch pins are checked under the same persistent writer guard.
+func (s *Store) UpdateHead(ctx context.Context, expected, target string, pins ...HeadPin) (err error) {
 	if len(target) > 4096 || !strings.HasPrefix(target, "heads/") || !validRef(target) {
 		return invalid("HEAD")
+	}
+	for _, pin := range pins {
+		if len(pin.Name) > 4096 || !strings.HasPrefix(pin.Name, "heads/") || !validRef(pin.Name) || pin.ID != (ID{}) && pin.ID.Kind != Commit {
+			return invalid("HEAD pin")
+		}
 	}
 	unlock, err := s.lock(ctx)
 	if err != nil {
@@ -109,6 +122,16 @@ func (s *Store) UpdateHead(ctx context.Context, expected, target string) (err er
 	refs, err := s.ListRefs(ctx)
 	if err != nil {
 		return err
+	}
+	for _, pin := range pins {
+		id, exists := refs[pin.Name]
+		if pin.ID == (ID{}) {
+			if exists {
+				return ErrConflict
+			}
+		} else if !exists || id != pin.ID {
+			return ErrConflict
+		}
 	}
 	if _, ok := refs[target]; !ok && !(target == "heads/main" && len(refs) == 0) {
 		return os.ErrNotExist

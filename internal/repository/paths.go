@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,14 +15,33 @@ import (
 func sortRefs(refs []Ref) {
 	sort.Slice(refs, func(i, j int) bool { return refs[i].Name < refs[j].Name })
 }
+
+var errPathBlocked = errors.New("snapshot ancestor is a file or symbolic link")
+var errPathAlias = errors.New("filesystem alias occupies snapshot path")
+
+func reservedWindowsName(part string) bool {
+	base := part
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.TrimRight(base, " ")
+	if strings.EqualFold(base, "CON") || strings.EqualFold(base, "PRN") || strings.EqualFold(base, "AUX") || strings.EqualFold(base, "NUL") || strings.EqualFold(base, "CLOCK$") || strings.EqualFold(base, "CONIN$") || strings.EqualFold(base, "CONOUT$") {
+		return true
+	}
+	if len(base) >= 4 && (strings.EqualFold(base[:3], "COM") || strings.EqualFold(base[:3], "LPT")) {
+		switch base[3:] {
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³":
+			return true
+		}
+	}
+	return false
+}
 func validPath(name string) error {
 	if name == "" || len(name) > 4096 || strings.Contains(name, `\`) || strings.HasPrefix(name, "/") {
 		return fmt.Errorf("unsafe snapshot path %q", name)
 	}
 	for _, part := range strings.Split(name, "/") {
-		base := strings.ToUpper(strings.SplitN(part, ".", 2)[0])
-		reserved := base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" || len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9'
-		if part == "" || part == "." || part == ".." || strings.EqualFold(part, ".pebble") || strings.EqualFold(part, ".git") || strings.HasSuffix(part, ".") || strings.HasSuffix(part, " ") || strings.ContainsAny(part, `:<>"|?*`) || strings.ContainsFunc(part, unicode.IsControl) || reserved {
+		if part == "" || part == "." || part == ".." || strings.EqualFold(part, ".pebble") || strings.EqualFold(part, ".git") || strings.HasSuffix(part, ".") || strings.HasSuffix(part, " ") || strings.ContainsAny(part, `:<>"|?*`) || strings.ContainsFunc(part, unicode.IsControl) || reservedWindowsName(part) {
 			return fmt.Errorf("unsafe or nonportable snapshot path %q", name)
 		}
 	}
@@ -65,8 +85,8 @@ func (r *Repository) safePath(name string) (string, error) {
 	for i, part := range parts {
 		// Refuse differently spelled filesystem aliases, including Unicode
 		// normalization aliases, without rewriting canonical tree paths.
-		children, err := os.ReadDir(p)
-		if err != nil && !os.IsNotExist(err) {
+		children, err := readDirectory(p)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}
 		exact := false
@@ -75,7 +95,7 @@ func (r *Repository) safePath(name string) (string, error) {
 				exact = true
 			}
 			if child.Name() != part && strings.EqualFold(child.Name(), part) {
-				return "", fmt.Errorf("case-colliding working path: %s", name)
+				return "", fmt.Errorf("%w: case-colliding working path: %s", errPathAlias, name)
 			}
 		}
 		p = filepath.Join(p, part)
@@ -87,13 +107,10 @@ func (r *Repository) safePath(name string) (string, error) {
 			return "", err
 		}
 		if !exact {
-			return "", fmt.Errorf("filesystem-alias working path: %s", name)
+			return "", fmt.Errorf("%w: filesystem-alias working path: %s", errPathAlias, name)
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("symlink in snapshot path %s", name)
-		}
-		if i < len(parts)-1 && !info.IsDir() {
-			return "", fmt.Errorf("file blocks directory in %s", name)
+		if i < len(parts)-1 && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+			return "", fmt.Errorf("%w: %s", errPathBlocked, name)
 		}
 	}
 	return p, nil
