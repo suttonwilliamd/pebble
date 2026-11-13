@@ -417,6 +417,11 @@ func (s *Store) Put(ctx context.Context, id ID, source io.Reader) (err error) {
 			return err
 		}
 	}
+	if n.committer {
+		if err = s.requireStaging(); err != nil {
+			return err
+		}
+	}
 	// Even an identical retry is republished after verifying existing bytes.
 	// This establishes a fresh namespace barrier after an uncertain earlier I/O.
 	if err = s.finish(ctx, f, path); err != nil {

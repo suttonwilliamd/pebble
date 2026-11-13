@@ -20,7 +20,7 @@ func transitionFixture(t *testing.T) *Repository {
 		t.Fatal(err)
 	}
 	write(t, r.root, "node", []byte("original file\x00"))
-	committed(t, r, "file")
+	frozenSnapshot(t, r, "file")
 	if err = r.CreateBranch("file"); err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func transitionFixture(t *testing.T) *Repository {
 		t.Fatal(err)
 	}
 	write(t, r.root, "node/deep/child", []byte("nested revision\xff"))
-	committed(t, r, "directory")
+	frozenSnapshot(t, r, "directory")
 	if err = r.CreateBranch("directory"); err != nil {
 		t.Fatal(err)
 	}

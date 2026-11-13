@@ -9,6 +9,52 @@ same `IngestFile`/`CopyFile` path, without filename or binary classification.
 The `/v1/` service remains legacy-only. There is no implicit migration, format2
 sync, merge command, GC or Git importer.
 
+## PB-12: immutable selective staging and identity
+
+`add` and `commit --all` share the bounded streaming ingestion and native identity
+checks used by the repository engine; default `commit` never scans working bytes.
+The index is a full immutable tree, not a stat cache. Status compares HEAD/index
+and index/worktree independently; ignore inspection recognizes staged additions.
+See [CLI/config precedence](../README.md#dogfood-safely).
+
+`add` (and explicit `commit --all`) installs `requires staging-v1` while retaining
+any `requires filesystem-v1` line. Exact supported markers are the original
+format2 marker, filesystem-only, staging-only, and filesystem then staging. Old
+writers cannot bypass the index; upgrade uses unchanged worktree/store guards and
+refuses pending recovery or active cooperating owners. An old regular-only
+repository does not silently gain filesystem/link support.
+
+Local `.pebble/index` is at most 8,192 bytes. Neutral state is exactly
+`pebble-index 1\\nempty\\n`. Non-neutral state is
+`pebble-index 1\\n || head:text || base:33 || tree:33 || next:33 || sha256:32`,
+with the digest covering all preceding bytes. Base/next use 33 zero bytes for
+absence; otherwise they are commit links. Tree is a typed tree link; HEAD uses
+the branch grammar. Whole-file graphs, portable entries, base and prepared-next
+parent/tree bindings validate before use. Missing, stale, unknown, truncated,
+oversized or corrupt records never become an implicit commit-everything fallback.
+The sole pre-enable residue accepted is a neutral index from interrupted upgrade.
+
+Index publication holds the worktree guard, validates exact symbolic HEAD/base
+under the store writer guard, verifies closure and reaffirms object durability,
+then uses existing sync/atomic-replace/namespace barriers. Commit durably prepares
+`next` before ref CAS. Reopen with current ID = base retains staged revisions;
+current ID = exact next recognizes consumption. Successful commits publish neutral
+state; interrupted cleanup does not duplicate a staged commit. A different HEAD
+or ID fails closed without deleting index/history.
+
+Checkout conservatively refuses staged changes and neutralizes a clean index
+before publishing the existing worktree journal. Restore keeps the index and
+changes only the explicitly requested HEAD working revision; recovery therefore
+does not need a second index replay protocol. No operation overwrites staged A
+with later working B implicitly. Power-loss, noncooperating metadata writers and
+concurrent editors remain outside the existing guarantees.
+
+New commit metadata records explicit author and committer identities using the
+[gated additive extension](contracts/v2.md#3-trees-commits-and-tags). Historical
+commits are not rewritten and missing committer provenance is not fabricated.
+Global/local Pebble config and role-specific environment are separate from Git
+configuration, filters and account credentials.
+
 ## PB-10: filesystem representation and guarded transitions
 
 The [explicit additive contract revision](contracts/v2.md) preserves every old
@@ -111,8 +157,8 @@ or hardware power-loss qualification is implied.
 Checkout and restore now publish an immutable, versioned, SHA-256-checksummed
 local intent in `.pebble/worktree-journal` before any working-path mutation.
 This is repository coordination above the immutable store, not another object
-codec or format-2 change. No staging index is introduced: the coherent index view
-remains the committed HEAD tree.
+codec. PB-12's separate immutable-tree index must be clean before checkout and
+is retained unchanged by restore/recovery.
 The encoded intent is bounded to 64 MiB and the existing graph-count limit;
 oversized plans fail before any working-path mutation.
 

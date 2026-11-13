@@ -30,15 +30,15 @@ type IgnoreResult struct {
 	ignore.Result
 }
 
-// CheckIgnore uses HEAD rather than ignore rules to identify tracked paths,
-// including deleted files. It never follows a link to load descendant rules.
+// CheckIgnore uses the index to identify tracked paths, including staged adds
+// and deleted working files. It never follows a link to load descendant rules.
 func (r *Repository) CheckIgnore(names []string) (_ []IgnoreResult, err error) {
 	unlock, err := r.lock()
 	if err != nil {
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, unlock()) }()
-	entries, err := r.TreeEntries()
+	_, entries, err := r.index()
 	if err != nil {
 		return nil, err
 	}

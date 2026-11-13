@@ -9,7 +9,8 @@ and independent backups while dogfooding.
 ## What works today
 
 - Typed SHA-256 objects, canonical file trees and immutable ordered-parent commits.
-- Whole-working-tree commits, change detection (added/modified/deleted), full log.
+- Path-selective immutable staging, explicit tracked `commit --all`, two-column
+  staged/unstaged status, config-backed author/committer identity, full log.
 - Branch creation/listing (including `feature/name`) and file-restoring checkout.
 - Checkout refuses dirty tracked files, untracked/ignored file collisions, unsafe
   paths and corrupt target objects before changing files.
@@ -38,7 +39,7 @@ and independent backups while dogfooding.
   incremental/resumable sync. `pull`/merge remain unavailable; use `fetch` and
   explicit checkout. Pebble cannot push to GitHub's Git endpoints.
   The old `internal/remote` prototype is not mounted or used by the new server.
-- Merge/combine CLI, Git import/export, clone, staging, diff, branch deletion.
+- Merge/combine CLI, Git import/export, clone, diff, branch deletion.
 - Format2 remote sync and GC. Streaming storage does not yet establish
   large-binary scalability or improvements over Git.
 - Special files and empty directories as standalone snapshot entries.
@@ -83,24 +84,45 @@ existing or incomplete `.pebble` data. Local commands reject legacy/unmarked
 repositories explicitly; use the separate-destination migration below.
 Pebble always excludes `.git` and `.pebble` metadata from snapshots.
 
-Set your identity (required; no more placeholder author):
+Set your identity (required; no inferred host/account or placeholder identity):
 
-```powershell
-$env:PEBBLE_AUTHOR = "Your Name"
-$env:PEBBLE_EMAIL = "you@example.com"
+```sh
+pebble config --global user.name "Your Name"
+pebble config --global user.email "you@example.com"
 ```
 
-On POSIX shells, use `export PEBBLE_AUTHOR="Your Name"` and
-`export PEBBLE_EMAIL="you@example.com"` instead.
+Or set `PEBBLE_AUTHOR` and `PEBBLE_EMAIL` for both identities (PowerShell:
+`$env:PEBBLE_AUTHOR = "Your Name"` / `$env:PEBBLE_EMAIL = "you@example.com"`).
+Configuration is Pebble-only: global `$HOME/.pebbleconfig` (falling back to the
+OS home if `HOME` is unset), local `.pebble/config.json`. `pebble config` defaults
+to local; `--global` works outside a repository. Reading a key prints that scope's
+stored value. Files are bounded JSON maps of `user.name`, `user.email`,
+`author.name`, `author.email`, `committer.name`, `committer.email`; unknown keys,
+duplicates, linked/malformed files and invalid identities fail closed.
+
+Precedence **per field**, lowest to highest:
+
+1. Global config, overlaid by local config for the same key.
+2. `author.*` / `committer.*` override effective `user.*` for their role.
+3. `PEBBLE_AUTHOR` / `PEBBLE_EMAIL` override both roles (legacy common identity).
+4. `PEBBLE_AUTHOR_NAME` / `PEBBLE_AUTHOR_EMAIL` and
+   `PEBBLE_COMMITTER_NAME` / `PEBBLE_COMMITTER_EMAIL` override their own role.
+
+An explicitly empty environment value is an error, not a fallback. New commits
+record both roles with the operation's native timestamp; old commits without
+committer metadata remain unchanged and do not display an invented committer.
+Git identity/configuration, filters, attributes, autocrlf and hooks are not read.
 
 ```sh
 pebble init
 pebble status
+pebble add .                       # or: pebble add src/file assets/model.bin
 pebble commit -m "Initial snapshot"
 pebble branch experiment
 pebble checkout experiment
 # edit files
 pebble status
+pebble add path/to/changed-file
 pebble commit "Try a change"
 pebble log
 pebble checkout main
@@ -112,9 +134,32 @@ To undo edits or recover a deleted tracked file, run `pebble restore path/to/fil
 without changing history and restores the stored regular-file or link type.
 It does not authorize discarding a nonempty directory or later external edits.
 
-Commits include **all tracked and non-ignored untracked files**, additions and
-deletions; there is no staging area. Unchanged commits are rejected. Status uses committed HEAD, not an
-index cache. Untracked files may survive checkout unless they collide with a
+Default commits contain **exactly staged revisions**, not later working edits.
+`add` captures file bytes/type/executable identity in immutable objects and stages
+selected deletions. Paths are literal, relative to the invoking directory; a
+directory includes its descendants, `.` selects that directory, and `--` precedes
+paths beginning with `-`. Ignored untracked paths are not added; already indexed
+paths stay tracked. No bytes are decoded, filtered or line-ending normalized.
+
+`commit --all [-m] <message>` (or `-a`) explicitly refreshes **index-tracked**
+modifications/deletions, including staged additions, then commits that tree.
+It does not add unrelated untracked files, ignored new files, or an unstaged
+re-add after a staged deletion. Use `add` explicitly to track those re-adds.
+Unchanged commits are rejected; an explicitly staged empty initial tree remains
+supported. `status` prints Git-style `XY path`: X = HEAD versus index, Y = index
+versus worktree; `??` = untracked. `MM` means a staged revision plus later edits,
+`AM` a staged addition plus later edits. A staged deletion and untracked re-add
+appear separately. `status --staged` / `--unstaged` select the respective side.
+
+Staging publishes the `staging-v1` capability marker before index facts, excluding
+incompatible older writers; it preserves the existing filesystem capability.
+Missing/malformed/stale indexes fail closed. Do not remove or edit `.pebble/index`
+to recover: preserve metadata and history. A prepared commit pins exact HEAD/base/
+tree/next IDs, so reopen recognizes publication without duplicating staged work.
+Checkout conservatively refuses staged changes. `restore <file>` still restores
+HEAD working bytes and leaves staged revisions intact; it is not an unstage command.
+
+Untracked files may survive checkout unless they collide with a
 target leaf, in which case checkout refuses unless literal bytes and observable
 type/mode are identical (then the existing identity is adopted without rewriting).
 File/directory transitions retain original leaves and verified empty blocking
@@ -249,7 +294,8 @@ support. Review `pebble status` for secrets before committing.
   markers still require manual inspection and confirmation no old writer is live.
   Interrupted initialization also needs manual inspection, not retry/reset.
 - Successful completion means files and symbolic HEAD have passed platform
-  durability barriers. V2 has no mutable staging index: status derives from HEAD.
+  durability barriers. Staging metadata uses the same guarded atomic publication
+  barriers; checkout starts only with a clean index.
   Process-kill tests are not hardware power-loss qualification. Keep editors
   quiescent; no force command or unconditional concurrent-editor guarantee exists.
 

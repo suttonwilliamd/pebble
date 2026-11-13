@@ -25,11 +25,12 @@ func TestFilesystemCLI(t *testing.T) {
 		t.Fatalf("build actual CLI: %v\n%s", err, out)
 	}
 	root := t.TempDir()
+	env := append(isolatedIdentityEnv(t), "PEBBLE_AUTHOR=Filesystem CLI Fixture", "PEBBLE_EMAIL=fixture@example.invalid")
 	invoke := func(ok bool, args ...string) string {
 		t.Helper()
 		cmd := exec.Command(bin, args...)
 		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "PEBBLE_AUTHOR=Filesystem CLI Fixture", "PEBBLE_EMAIL=fixture@example.invalid")
+		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if (err == nil) != ok {
 			t.Fatalf("actual CLI %v: %v\n%s", args, err, out)
@@ -55,12 +56,14 @@ func TestFilesystemCLI(t *testing.T) {
 	}
 	write("node", "original CLI file\x00")
 	invoke(true, "init")
+	invoke(true, "add", ".")
 	invoke(true, "commit", "file baseline")
 	invoke(true, "branch", "node-file")
 	if err := os.Remove(filepath.Join(root, "node")); err != nil {
 		t.Fatal(err)
 	}
 	write("node/deep/child", "nested CLI bytes\x00\xff")
+	invoke(true, "add", ".")
 	invoke(true, "commit", "directory revision")
 	invoke(true, "branch", "node-directory")
 	invoke(true, "checkout", "node-file")
@@ -139,6 +142,7 @@ func TestFilesystemCLI(t *testing.T) {
 			t.Fatalf("unsupported CLI checkout published intent: %v", e)
 		}
 	} else {
+		invoke(true, "add", ".")
 		invoke(true, "commit", "literal link")
 		invoke(true, "branch", "literal-state")
 		if err = os.Remove(linkPath); err != nil {
@@ -147,6 +151,7 @@ func TestFilesystemCLI(t *testing.T) {
 		if err = os.Symlink("literal", linkPath); err != nil {
 			t.Fatal(err)
 		}
+		invoke(true, "add", ".")
 		invoke(true, "commit", "looping link")
 		invoke(true, "checkout", "literal-state")
 		if target, e := os.Readlink(linkPath); e != nil || target != literal {

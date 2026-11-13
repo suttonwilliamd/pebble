@@ -105,6 +105,9 @@ func (r *Repository) RestoreContext(ctx context.Context, name string) (err error
 		return err
 	}
 	defer func() { err = errors.Join(err, unlock()) }()
+	if _, _, err = r.index(); err != nil {
+		return err
+	}
 	head, id, err := r.current()
 	if err != nil {
 		return err
@@ -164,6 +167,9 @@ func (r *Repository) CheckoutContext(ctx context.Context, name string) (err erro
 		if c.Code != "A" {
 			return fmt.Errorf("checkout refused: uncommitted change to %s", c.Path)
 		}
+	}
+	if err = r.cleanIndexForCheckout(); err != nil {
+		return err
 	}
 	return r.prepareWorktree(ctx, "checkout", "", head, ref, oldID, id, old, target)
 }

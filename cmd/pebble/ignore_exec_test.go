@@ -34,12 +34,12 @@ func TestIgnoreCLI(t *testing.T) {
 	var env []string
 	for _, value := range os.Environ() {
 		key := strings.ToUpper(strings.SplitN(value, "=", 2)[0])
-		if strings.HasPrefix(key, "GIT_") || key == "HOME" || key == "XDG_CONFIG_HOME" || key == "PEBBLE_AUTHOR" || key == "PEBBLE_EMAIL" {
+		if strings.HasPrefix(key, "GIT_") || strings.HasPrefix(key, "PEBBLE_AUTHOR") || strings.HasPrefix(key, "PEBBLE_COMMITTER") || key == "HOME" || key == "USERPROFILE" || key == "XDG_CONFIG_HOME" || key == "PEBBLE_EMAIL" {
 			continue
 		}
 		env = append(env, value)
 	}
-	env = append(env, "HOME="+config, "XDG_CONFIG_HOME="+config, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+empty,
+	env = append(env, "HOME="+config, "USERPROFILE="+config, "XDG_CONFIG_HOME="+config, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+empty,
 		"GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=core.excludesFile", "GIT_CONFIG_VALUE_0="+empty,
 		"GIT_CONFIG_KEY_1=core.ignoreCase", "GIT_CONFIG_VALUE_1=false", "PEBBLE_AUTHOR=Ignore Fixture", "PEBBLE_EMAIL=fixture@example.invalid")
 	root := t.TempDir()
@@ -127,7 +127,7 @@ func TestIgnoreCLI(t *testing.T) {
 			if p == "cache" || p == "edge" {
 				continue
 			}
-			visible := strings.Contains(status, "A  "+p+"\n")
+			visible := strings.Contains(status, "?? "+p+"\n")
 			if visible != (state != "ignored") {
 				t.Errorf("%s visibility differs from Git (%s):\n%s", p, state, status)
 			}
@@ -150,6 +150,7 @@ func TestIgnoreCLI(t *testing.T) {
 		invoke(git, root, true, "init", "-q")
 		put("hidden/deep/tracked.log", "original")
 		put("hidden/deep/deleted.log", "deleted original")
+		invoke(bin, root, true, "add", ".")
 		invoke(bin, root, true, "commit", "before ignores")
 		invoke(bin, root, true, "branch", "before")
 		invoke(git, root, true, "add", "--", "hidden/deep/tracked.log", "hidden/deep/deleted.log")
@@ -181,7 +182,7 @@ func TestIgnoreCLI(t *testing.T) {
 			t.Fatal(out)
 		}
 		status := invoke(bin, root, true, "status")
-		for _, want := range []string{"M  hidden/deep/tracked.log\n", "D  hidden/deep/deleted.log\n", "A  same.layer\n", "A  nested/deep.layer\n"} {
+		for _, want := range []string{" M hidden/deep/tracked.log\n", " D hidden/deep/deleted.log\n", "?? same.layer\n", "?? nested/deep.layer\n"} {
 			if !strings.Contains(status, want) {
 				t.Errorf("missing %q: %s", want, status)
 			}
@@ -198,6 +199,7 @@ func TestIgnoreCLI(t *testing.T) {
 		if err := os.Remove(filepath.Join(root, "hidden/deep/deleted.log")); err != nil {
 			t.Fatal(err)
 		}
+		invoke(bin, root, true, "add", ".")
 		invoke(bin, root, true, "commit", "ignored tracked modifications and deletion")
 		invoke(bin, root, true, "branch", "after")
 		invoke(bin, root, true, "checkout", "before")

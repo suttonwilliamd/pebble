@@ -46,7 +46,7 @@ func newRecoveryFixture(t *testing.T) recoveryFixture {
 	for name, data := range old {
 		write(t, r.root, name, data)
 	}
-	before := committed(t, r, "before")
+	before := frozenSnapshot(t, r, "before")
 	if err = r.CreateBranch("before"); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func newRecoveryFixture(t *testing.T) recoveryFixture {
 	for name, data := range target {
 		write(t, r.root, name, data)
 	}
-	after := committed(t, r, "after")
+	after := frozenSnapshot(t, r, "after")
 	if err = r.store.UpdateHead(context.Background(), "heads/main", "heads/before"); err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestCheckoutRecoveryEveryFaultBoundary(t *testing.T) {
 			}
 			pending := journalExists(t, f.r)
 			if pending {
-				if _, err := f.r.Commit("must not record partial files", "Fixture", "fixture@example.com"); err == nil {
+				if _, err := f.r.Commit("must not record partial files", fixtureIdentity, false); err == nil {
 					t.Fatal("commit admitted during recovery")
 				}
 				if _, err := f.r.Status(); err == nil {
@@ -862,7 +862,7 @@ func TestRestoreRecoveryEveryBoundary(t *testing.T) {
 					t.Fatalf("pre-intent restore changed revision: %s %v", id, err)
 				}
 				changes, err := f.r.Status()
-				if err != nil || len(changes) != 1 || changes[0] != (Change{"M", "a.bin"}) {
+				if err != nil || len(changes) != 1 || changes[0] != (Change{" M", "a.bin"}) {
 					t.Fatalf("pre-intent dirty index view: %v %v", changes, err)
 				}
 			})

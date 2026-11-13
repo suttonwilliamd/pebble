@@ -37,8 +37,10 @@ func usage(w io.Writer) {
 
 Usage:
   pebble init                     Initialize in the current directory
-  pebble commit [-m] <message>     Snapshot all non-ignored files
-  pebble status                   Show added, modified and deleted files
+  pebble add [--] <path>...        Stage exact file revisions or deletions
+  pebble commit [--all] [-m] <message> Commit staged revisions only
+  pebble status [--staged|--unstaged] Show HEAD/index and index/worktree changes
+  pebble config [--global] <key> [value] Read/write Pebble identity configuration
   pebble log                      Show complete current-branch history
   pebble check-ignore [-v] <path>... Explain ignore rules (tracked paths stay tracked)
   pebble branch [name]            List branches or create one at HEAD
@@ -52,7 +54,9 @@ Usage:
   pebble migrate-v1 <src> <dest>   Verify/copy v1 into a new separate v2 repository
   pebble help                     Show this help
 
-Identity: set PEBBLE_AUTHOR and PEBBLE_EMAIL before committing.
+Identity: pebble config user.name/user.email; environment overrides configuration.
+PEBBLE_AUTHOR/PEBBLE_EMAIL set both roles; PEBBLE_AUTHOR_NAME/EMAIL and
+PEBBLE_COMMITTER_NAME/EMAIL override their respective roles.
 Remotes: legacy v1 repositories only; format2 sync is not implemented.
 Legacy/unmarked repositories require explicit migration for local commands.
 Checkout/restore retain durable recovery intent; use pebble recover after interruption.
@@ -70,11 +74,14 @@ func run(args []string, cwd string, w io.Writer) error {
 	if cmd == "migrate-v1" {
 		return handleMigration(params, cwd, w)
 	}
+	if cmd == "config" && len(params) > 0 && params[0] == "--global" {
+		return handleConfig(params, "", w)
+	}
 	if cmd == "pull" {
 		return errors.New("pull/merge is not implemented: use pebble fetch <url> [branch], inspect history, then checkout incoming/<branch>; keep Git and backups")
 	}
 	switch cmd {
-	case "init", "status", "check-ignore", "log", "branch", "checkout", "commit", "restore", "recover", "enable-filesystem", "push", "fetch", "fsck":
+	case "init", "add", "config", "status", "check-ignore", "log", "branch", "checkout", "commit", "restore", "recover", "enable-filesystem", "push", "fetch", "fsck":
 	default:
 		return fmt.Errorf("unknown command %q; run pebble help", cmd)
 	}
@@ -121,6 +128,28 @@ func run(args []string, cwd string, w io.Writer) error {
 		return err
 	}
 	switch cmd {
+	case "config":
+		return handleConfig(params, repo.RootPath(), w)
+	case "add":
+		if len(params) > 0 && params[0] == "--" {
+			params = params[1:]
+		}
+		if len(params) == 0 {
+			return errors.New("usage: pebble add [--] <path>...")
+		}
+		names := make([]string, 0, len(params))
+		for _, input := range params {
+			p := input
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(cwd, p)
+			}
+			name, err := filepath.Rel(repo.RootPath(), p)
+			if err != nil || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("path outside repository: %q", input)
+			}
+			names = append(names, filepath.ToSlash(name))
+		}
+		return repo.Stage(names)
 	case "check-ignore":
 		verbose := false
 		if len(params) > 0 && (params[0] == "-v" || params[0] == "--verbose") {
@@ -182,24 +211,31 @@ func run(args []string, cwd string, w io.Writer) error {
 		}
 		fmt.Fprintln(w, "Filesystem capability enabled; incompatible older writers must not use this repository")
 	case "commit":
+		all := false
+		if len(params) > 0 && (params[0] == "--all" || params[0] == "-a") {
+			all, params = true, params[1:]
+		}
 		if len(params) > 0 && params[0] == "-m" {
 			params = params[1:]
 		}
-		if len(params) == 0 {
-			return errors.New("usage: pebble commit [-m] <message>")
+		if len(params) == 0 || strings.HasPrefix(params[0], "-") {
+			return errors.New("usage: pebble commit [--all|-a] [-m] <message>")
 		}
-		author, email := strings.TrimSpace(os.Getenv("PEBBLE_AUTHOR")), strings.TrimSpace(os.Getenv("PEBBLE_EMAIL"))
-		if author == "" || email == "" {
-			return errors.New("set PEBBLE_AUTHOR and PEBBLE_EMAIL to your commit identity")
+		identity, err := resolveIdentity(repo.RootPath())
+		if err != nil {
+			return err
 		}
-		hash, err := repo.Commit(strings.Join(params, " "), author, email)
+		hash, err := repo.Commit(strings.Join(params, " "), identity, all)
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(w, "[%x] %s\n", hash.Digest[:4], strings.Join(params, " "))
 	case "status":
-		if len(params) != 0 {
-			return errors.New("usage: pebble status")
+		filter := ""
+		if len(params) == 1 && (params[0] == "--staged" || params[0] == "--unstaged") {
+			filter = params[0]
+		} else if len(params) != 0 {
+			return errors.New("usage: pebble status [--staged|--unstaged]")
 		}
 		ref, err := repo.GetHead()
 		if err != nil {
@@ -214,7 +250,10 @@ func run(args []string, cwd string, w io.Writer) error {
 			fmt.Fprintln(w, "Working tree clean")
 		}
 		for _, c := range changes {
-			fmt.Fprintf(w, "%s  %s\n", c.Code, c.Path)
+			if filter == "--staged" && (c.Code[0] == ' ' || c.Code == "??") || filter == "--unstaged" && c.Code[1] == ' ' {
+				continue
+			}
+			fmt.Fprintf(w, "%s %s\n", c.Code, c.Path)
 		}
 	case "log":
 		if len(params) != 0 {
@@ -235,6 +274,9 @@ func run(args []string, cwd string, w io.Writer) error {
 			_, offset := zone.Zone()
 			stamp := time.Unix(c.Seconds, int64(c.Nanoseconds)).In(time.FixedZone(c.Offset, offset))
 			_, err = fmt.Fprintf(w, "commit %s\nAuthor: %s <%s>\nDate:   %s %s\n\n    %s\n\n", id, c.Author, c.Email, stamp.Format("Mon Jan 2 15:04:05.999999999 2006"), c.Offset, c.Message)
+			if err == nil && c.Committer != "" {
+				_, err = fmt.Fprintf(w, "Committer: %s <%s>\n\n", c.Committer, c.CommitterEmail)
+			}
 			return err
 		})
 	case "branch":

@@ -87,15 +87,16 @@ serially to avoid overlapping CLI/repository/store filesystem-heavy workloads.
 4. **Complete sync graph and server.** Transfer all reachable commits/trees/blobs
    or manifests/chunks, validate before publication, fast-forward/CAS ref updates,
    protocol versioning, authentication, size limits and interrupted-transfer recovery.
-5. **Daily ergonomics.** Read-only text/binary diff, restore from arbitrary revisions, config-backed
-   identity, safe branch deletion, ignore tooling and signed release binaries.
+5. **Daily ergonomics.** Read-only text/binary diff, restore from arbitrary revisions,
+   safe branch deletion and signed release binaries. PB-12 adds selective staging,
+   staged/unstaged status and config/environment author/committer identity.
 6. **Merge and binary conflict UX.** Connect the existing combine library only
    after preservation tests and explicit resolution/recovery semantics are in place.
 
 ## Known constraints
 
 Format2 local commands use streaming chunks/manifests and checksummed packs;
-legacy v1 remains whole-file JSON/base64. No staging, merge CLI, format2 remotes,
+legacy v1 remains whole-file JSON/base64. No merge CLI or format2 remotes,
 GC or automatic migration. Checkout/restore have explicit journal recovery;
 they are not a guarantee against concurrent editors or arbitrary hardware failure.
 Special files, empty directory snapshots and full permission/ACL preservation

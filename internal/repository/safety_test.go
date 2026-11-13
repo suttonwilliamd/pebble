@@ -70,7 +70,7 @@ func TestSymlinkAndSpecialPathGuards(t *testing.T) {
 		t.Skipf("symlink creation unavailable: %v", err)
 	}
 	changes, err := r.Status()
-	if err != nil || len(changes) != 1 || changes[0] != (Change{"M", "tracked"}) {
+	if err != nil || len(changes) != 1 || changes[0] != (Change{" M", "tracked"}) {
 		t.Fatalf("link type change not detected: %v %v", changes, err)
 	}
 	if err = r.Restore("tracked"); err != nil {

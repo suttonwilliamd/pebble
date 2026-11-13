@@ -33,6 +33,16 @@ jobs:
         run: go build ./...
       - name: Vet
         run: go vet ./...
+      - name: Actual PB11 staging writer exclusion
+        shell: bash
+        run: |
+          base=4f6c9aa256ba90f1185a4225519d7733bd10ef57
+          old="$(mktemp -d "${RUNNER_TEMP//\\//}/pebble-pb12-old-XXXXXX")"
+          git cat-file -e "$base^{commit}" || git fetch --no-tags origin "$base"
+          git archive --format=tar "$base" go.mod go.sum cmd internal | tar -xf - -C "$old"
+          printf '%s\n' "$base" > "$old/BASELINE"
+          PEBBLE_TEST_STAGING_OLD_SOURCE="$old" PEBBLE_REQUIRE_STAGING_OLD_CONSUMER=1 \
+            go test ./internal/repository -run '^TestStagingOldConsumers$' -count=1 -timeout=5m -v
       - name: Actual PB09 writer and recovery compatibility
         shell: bash
         run: |

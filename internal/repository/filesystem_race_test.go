@@ -218,7 +218,7 @@ func TestFilesystemReadParentRace(t *testing.T) {
 				}
 				return err
 			}
-			if _, err = r.Commit("must refuse substituted source", "Fixture", "fixture@example.invalid"); err == nil {
+			if _, err = r.Commit("must refuse substituted source", fixtureIdentity, true); err == nil {
 				t.Fatal("commit read through a substituted parent")
 			}
 			if !fired {
@@ -258,7 +258,7 @@ func TestFilesystemCommitIdentityRace(t *testing.T) {
 		expected = publicSnapshot(t, r.root)
 		return nil
 	}
-	if _, err = r.Commit("must not adopt replacement", "Fixture", "fixture@example.invalid"); err == nil {
+	if _, err = r.Commit("must not adopt replacement", fixtureIdentity, true); err == nil {
 		t.Fatal("commit adopted identical-byte foreign identity")
 	}
 	if !fired {

@@ -86,7 +86,7 @@ func TestFilesystemPOSIXAmbiguousCapture(t *testing.T) {
 	if _, err = r.Status(); err == nil {
 		t.Fatal("ambiguous native target accepted by scan")
 	}
-	if _, err = r.Commit("must refuse ambiguous target", "Fixture", "fixture@example.invalid"); err == nil {
+	if err = r.Stage([]string{"odd"}); err == nil {
 		t.Fatal("ambiguous native target published")
 	}
 	after, err := os.Lstat(p)

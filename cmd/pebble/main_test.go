@@ -13,6 +13,7 @@ import (
 func TestDogfoodCLI(t *testing.T) {
 	t.Setenv("PEBBLE_AUTHOR", "Dogfood User")
 	t.Setenv("PEBBLE_EMAIL", "dogfood@example.com")
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	var out bytes.Buffer
 	call := func(args ...string) string {
@@ -25,12 +26,14 @@ func TestDogfoodCLI(t *testing.T) {
 	}
 	call("init")
 	os.WriteFile(filepath.Join(root, "hello.txt"), []byte("hello"), 0644)
-	if s := call("status"); !strings.Contains(s, "A  hello.txt") {
+	if s := call("status"); !strings.Contains(s, "?? hello.txt") {
 		t.Fatal(s)
 	}
+	call("add", ".")
 	call("commit", "-m", "initial commit")
 	call("branch", "topic")
 	os.WriteFile(filepath.Join(root, "hello.txt"), []byte("world"), 0644)
+	call("add", "hello.txt")
 	call("commit", "second", "commit")
 	s := call("log")
 	if !strings.Contains(s, "initial commit") || !strings.Contains(s, "second commit") || strings.Count(s, "Author: Dogfood User") != 2 {
@@ -68,6 +71,7 @@ func TestCLIErrors(t *testing.T) {
 	t.Setenv("PEBBLE_TOKEN_FILE", "")
 	t.Setenv("PEBBLE_AUTHOR", "")
 	t.Setenv("PEBBLE_EMAIL", "")
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	var out bytes.Buffer
 	if err := run([]string{"init"}, root, &out); err != nil {
