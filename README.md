@@ -99,6 +99,8 @@ to local; `--global` works outside a repository. Reading a key prints that scope
 stored value. Files are bounded JSON maps of `user.name`, `user.email`,
 `author.name`, `author.email`, `committer.name`, `committer.email`; unknown keys,
 duplicates, linked/malformed files and invalid identities fail closed.
+The 64 KiB limit applies to the complete serialized config, including JSON escaping
+and its final newline. Oversized updates leave the prior config file unchanged.
 
 Precedence **per field**, lowest to highest:
 

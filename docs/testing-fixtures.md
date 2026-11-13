@@ -51,6 +51,13 @@ exclusion. Fresh-process checkout verifies raw binary SHA-256. Config tests use
 isolated HOME/config files and inspect stored author/committer provenance.
 Git isolation is child `Cmd.Env` only, never persistent worker exports.
 
+`TestIdentityConfigSerializedLimitCLI` runs actual local/global config commands
+at 65,535/65,536/65,537 serialized bytes, including JSON escaping and the final
+newline. Cumulative individually valid name fields and a single expanding value
+cannot publish an unreadable file. Failed updates preserve previous config bytes;
+subsequent CLI reads, updates and real commits still resolve recorded identities,
+including from a second repository sharing the isolated global config.
+
 `TestStagingInterruptedCommit` exits a real child at prepared/published boundaries;
 reopen retains or consumes the exact index without sweeping later bytes.
 `TestStagingFailsClosed`, `TestStagingIndexPublicationFailure`,

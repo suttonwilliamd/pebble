@@ -194,6 +194,9 @@ func handleConfig(params []string, root string, w io.Writer) (err error) {
 		return err
 	}
 	data = append(data, '\n')
+	if len(data) > maxConfigBytes {
+		return fmt.Errorf("identity config exceeds 64 KiB")
+	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".pebble-config-")
 	if err != nil {
 		return err
