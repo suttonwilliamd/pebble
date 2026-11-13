@@ -412,6 +412,64 @@ func (r *Repository) recoveryLocation(ctx context.Context, plan *worktreeIntent,
 	return location, nil
 }
 
+func (r *Repository) rebarrierRestoration(ctx context.Context, plan *worktreeIntent, repair *recoveryPlan, restore recoveryRestore) error {
+	canonical, err := captureRecoveryVersion(r, restore.Path, restore.Path, "")
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, errPathBlocked) || errors.Is(err, errPathAlias) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if canonical == nil || !(restore.Image != nil && equalImage(canonical.Image, restore.Image) || restore.Directory != "" && canonical.Directory == restore.Directory) {
+		// A subsequent edit owns the name now. Its independently saved
+		// original will be exposed at the alternate archive path.
+		return nil
+	}
+	target, err := r.safePath(restore.Path)
+	if err != nil {
+		return err
+	}
+	parents := map[string]string{}
+	for path := filepath.Dir(target); ; path = filepath.Dir(path) {
+		id, err := filesystemIdentity(path)
+		if err != nil {
+			return err
+		}
+		parents[path] = id
+		if filepath.Dir(path) == path {
+			break
+		}
+	}
+	check := func() error {
+		if err := r.checkRecoveryPlan(plan, repair); err != nil {
+			return err
+		}
+		for path, want := range parents {
+			id, err := filesystemIdentity(path)
+			if err != nil {
+				return err
+			}
+			if id != want {
+				return fmt.Errorf("restoration parent binding changed: %s", path)
+			}
+		}
+		return nil
+	}
+	identity := restore.Directory
+	if restore.Image != nil {
+		identity = restore.Image.Identity
+	}
+	if err = anchoredBarrier(target, identity, restore.Image, check, func() error {
+		return r.boundary(ctx, "repair-restore-barrier", target)
+	}); err != nil {
+		return err
+	}
+	if err = syncMigrationDirectory(r.journalPath()); err != nil {
+		return err
+	}
+	return r.boundary(ctx, "repair-restore-published", target)
+}
+
 func (r *Repository) resumeRecovery(ctx context.Context, plan *worktreeIntent, repair *recoveryPlan) error {
 	check := func() error { return r.checkRecoveryPlan(plan, repair) }
 	if err := check(); err != nil {
@@ -424,7 +482,10 @@ func (r *Repository) resumeRecovery(ctx context.Context, plan *worktreeIntent, r
 			return err
 		}
 		if source == nil {
-			// Already restored. Never reuse an old intent to erase a later edit.
+			// Consumption proves a rename, not that its barriers completed.
+			if err = r.rebarrierRestoration(ctx, plan, repair, restore); err != nil {
+				return fmt.Errorf("automatic public-name durability pending for %s: %w", restore.Path, err)
+			}
 			continue
 		}
 		if restore.Image != nil && !equalImage(source.Image, restore.Image) || restore.Directory != "" && source.Directory != restore.Directory {

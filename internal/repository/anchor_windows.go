@@ -191,3 +191,51 @@ func anchoredMove(source, target, identity string, image *fileImage, _ bool, che
 	}
 	return errors.Join(windows.FlushFileBuffers(h), windows.FlushFileBuffers(from.parent), windows.FlushFileBuffers(to.parent))
 }
+
+// Reestablish both writable-handle barriers after a consumed restoration.
+func anchoredBarrier(path, identity string, image *fileImage, check, barrier func() error) (err error) {
+	a, err := anchorPath(path, true)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, a.close()) }()
+	if err = check(); err != nil {
+		return err
+	}
+	h, err := relativeHandle(a.parent, a.leaf, windows.GENERIC_READ|windows.GENERIC_WRITE|windows.SYNCHRONIZE, windows.FILE_SHARE_READ, 0)
+	if err != nil {
+		return err
+	}
+	f := os.NewFile(uintptr(h), path)
+	defer func() { err = errors.Join(err, f.Close()) }()
+	var info windows.ByHandleFileInformation
+	if err = windows.GetFileInformationByHandle(h, &info); err != nil {
+		return err
+	}
+	actual := fmt.Sprintf("%x:%x:%x", info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow)
+	if actual != identity {
+		return fmt.Errorf("restored identity changed: %s", path)
+	}
+	if image == nil {
+		if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 || info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			return fmt.Errorf("restored directory became a non-directory or reparse point: %s", path)
+		}
+	} else if image.Symlink {
+		link, err := readLinkHandle(h)
+		if err != nil {
+			return err
+		}
+		if err = verifyLinkImage(link, image); err != nil {
+			return err
+		}
+	} else if err = verifyOpenedImage(f, image); err != nil {
+		return err
+	}
+	if err = barrier(); err != nil {
+		return err
+	}
+	if err = check(); err != nil {
+		return err
+	}
+	return errors.Join(windows.FlushFileBuffers(h), windows.FlushFileBuffers(a.parent), check())
+}

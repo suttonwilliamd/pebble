@@ -177,3 +177,75 @@ func anchoredMove(source, target, identity string, image *fileImage, publicSourc
 	}
 	return errors.Join(unix.Fsync(from.parent), unix.Fsync(to.parent))
 }
+
+// A rename may have consumed its source before the destination-parent barrier.
+// Re-pin the restored identity; never follow or replace a later public entry.
+func anchoredBarrier(path, identity string, image *fileImage, check, barrier func() error) (err error) {
+	a, err := anchorPath(path, false)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, a.close()) }()
+	if err = check(); err != nil {
+		return err
+	}
+	var opened *os.File
+	if image == nil {
+		opened, err = a.openDirectory()
+	} else if image.Symlink {
+		opened, err = a.openLink()
+	} else {
+		opened, err = a.openRead()
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, opened.Close()) }()
+	owned := func() error {
+		if err := check(); err != nil {
+			return err
+		}
+		var st unix.Stat_t
+		if err := unix.Fstat(int(opened.Fd()), &st); err != nil {
+			return err
+		}
+		if statIdentity(&st) != identity {
+			return fmt.Errorf("restored identity changed: %s", path)
+		}
+		if err := unix.Fstatat(a.parent, a.leaf, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			return err
+		}
+		if statIdentity(&st) != identity {
+			return fmt.Errorf("restored public binding changed: %s", path)
+		}
+		if image != nil {
+			if image.Symlink {
+				link, err := a.readLink()
+				if err != nil {
+					return err
+				}
+				return verifyLinkImage(link, image)
+			}
+			if _, err := opened.Seek(0, 0); err != nil {
+				return err
+			}
+			return verifyOpenedImage(opened, image)
+		}
+		return nil
+	}
+	if err = owned(); err != nil {
+		return err
+	}
+	if err = barrier(); err != nil {
+		return err
+	}
+	if err = owned(); err != nil {
+		return err
+	}
+	// POSIX links have no portable fsync-able leaf descriptor. Their pinned
+	// containing directory is the namespace durability boundary.
+	if image == nil || !image.Symlink {
+		err = opened.Sync()
+	}
+	return errors.Join(err, unix.Fsync(a.parent), owned())
+}

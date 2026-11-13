@@ -178,6 +178,135 @@ func TestAutomaticRecoveryRestorationNoClobberRace(t *testing.T) {
 	preservedVersion(t, receipt, "a.bin", "original", f.old["a.bin"])
 }
 
+func TestAutomaticRecoveryConsumedRestorationBarriers(t *testing.T) {
+	for _, kind := range []string{"file", "directory", "link", "directory-link", "later-edit"} {
+		t.Run(kind, func(t *testing.T) {
+			r, err := Init(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			link := kind == "link" || kind == "directory-link"
+			if link && !requireFixtureLinks(t, r.root) {
+				t.Skip("native symbolic-link creation unavailable; not native barrier replay evidence")
+			}
+			node := filepath.Join(r.root, "node")
+			original := []byte("original bytes retained across an incomplete public barrier\x00\xff")
+			switch {
+			case link:
+				if err = createLink("original-MiXeD-東京-Σ", node, kind == "directory-link"); err != nil {
+					t.Fatal(err)
+				}
+			case kind == "directory":
+				write(t, r.root, "node/child", original)
+			default:
+				write(t, r.root, "node", original)
+			}
+			write(t, r.root, "anchor", []byte("original anchor"))
+			beforeID := committed(t, r, "original restoration types")
+			if err = r.CreateBranch("before"); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.RemoveAll(node); err != nil {
+				t.Fatal(err)
+			}
+			write(t, r.root, "node", []byte("requested target version"))
+			committed(t, r, "target restoration types")
+			if err = r.CreateBranch("after"); err != nil {
+				t.Fatal(err)
+			}
+			if err = r.Checkout("before"); err != nil {
+				t.Fatal(err)
+			}
+			originalPublic := publicSnapshot(t, r.root)
+			identity, err := filesystemIdentity(node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retain := "retain-published"
+			if kind == "directory" {
+				retain = "retain-directory-published"
+			}
+			interruptWorktree(t, r.root, "PEBBLE_TEST_WORKTREE_BRANCH=after", "PEBBLE_TEST_WORKTREE_STAGE="+retain)
+			write(t, r.root, "anchor", []byte("external anchor forces automatic abort"))
+			// Real child exit consumes the source but skips the native post-rename
+			// durability work on both POSIX and Windows.
+			interruptWorktree(t, r.root, "PEBBLE_TEST_WORKTREE_RECOVER=1", "PEBBLE_TEST_WORKTREE_STAGE=repair-restore-renamed")
+			if got, err := filesystemIdentity(node); err != nil || got != identity {
+				t.Fatalf("child did not return the native original before exiting: %s %v", got, err)
+			}
+			public := publicSnapshot(t, r.root)
+			injected := errors.New("public restoration durability barrier still unavailable")
+			block := func(stage, path string) error {
+				if stage == "repair-restore-barrier" && path == node {
+					return injected
+				}
+				return nil
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				r, err = Open(r.root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.fault = block
+				if err = r.Recover(context.Background()); !errors.Is(err, injected) {
+					t.Fatalf("consumed restoration retired without a successful public barrier: %v", err)
+				}
+				if !journalExists(t, r) {
+					t.Fatal("failed replay barrier retired the active intent")
+				}
+				if head, err := r.GetHead(); err != nil || head != "heads/before" {
+					t.Fatalf("failed replay barrier changed HEAD: %s %v", head, err)
+				}
+				if id, err := r.CurrentID(); err != nil || id != beforeID {
+					t.Fatalf("failed replay barrier changed history: %s %v", id, err)
+				}
+				assertPublicSnapshot(t, r.root, public)
+				if receipts, err := r.RecoveryReceipts(); err != nil || len(receipts) != 0 {
+					t.Fatalf("failed public barrier published completed recovery: %#v %v", receipts, err)
+				}
+			}
+			if kind == "later-edit" {
+				write(t, r.root, "node", []byte("later external canonical bytes must not be rewritten"))
+				public = publicSnapshot(t, r.root)
+				// Do not flush a later version as though it were the owned original;
+				// the saved original must instead remain discoverable in the archive.
+			} else {
+				r.fault = nil
+			}
+			receipt := automaticAbort(t, r, "heads/before")
+			var restored []string
+			if kind == "directory" {
+				restored = []string{"node/child"}
+			}
+			assertReconciledPublic(t, r, public, receipt, restored...)
+			if kind == "directory" {
+				preservedVersion(t, receipt, "node/child", "original", original)
+			} else if !link {
+				preservedVersion(t, receipt, "node", "original", original)
+			}
+			if kind != "later-edit" {
+				after := publicSnapshot(t, r.root)
+				for _, name := range []string{"node", filepath.Join("node", "child")} {
+					if want, exists := originalPublic[name]; exists && after[name] != want {
+						t.Fatalf("barrier replay changed original native path/type/identity/bytes: %s", name)
+					}
+				}
+			}
+			public = publicSnapshot(t, r.root)
+			for attempt := 0; attempt < 2; attempt++ {
+				r, err = Open(r.root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = r.Recover(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				assertPublicSnapshot(t, r.root, public)
+			}
+		})
+	}
+}
+
 func TestAutomaticRecoveryBundleNoClobberRace(t *testing.T) {
 	f := pauseCheckout(t, "install-published")
 	write(t, f.r.root, "a.bin", []byte("concurrent canonical bytes"))
