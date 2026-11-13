@@ -17,12 +17,17 @@ import (
 	"github.com/suttonwilliamd/pebble/internal/syncproto"
 )
 
+var errNoIgnoredPaths = errors.New("no ignored paths")
+
 func main() {
 	cwd, err := os.Getwd()
 	if err == nil {
 		err = run(os.Args[1:], cwd, os.Stdout)
 	}
 	if err != nil {
+		if errors.Is(err, errNoIgnoredPaths) {
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
@@ -35,6 +40,7 @@ Usage:
   pebble commit [-m] <message>     Snapshot all non-ignored files
   pebble status                   Show added, modified and deleted files
   pebble log                      Show complete current-branch history
+  pebble check-ignore [-v] <path>... Explain ignore rules (tracked paths stay tracked)
   pebble branch [name]            List branches or create one at HEAD
   pebble checkout <branch>        Restore a branch (refuses tracked changes)
   pebble restore <file>           Discard edits to one file, restoring HEAD
@@ -68,7 +74,7 @@ func run(args []string, cwd string, w io.Writer) error {
 		return errors.New("pull/merge is not implemented: use pebble fetch <url> [branch], inspect history, then checkout incoming/<branch>; keep Git and backups")
 	}
 	switch cmd {
-	case "init", "status", "log", "branch", "checkout", "commit", "restore", "recover", "enable-filesystem", "push", "fetch", "fsck":
+	case "init", "status", "check-ignore", "log", "branch", "checkout", "commit", "restore", "recover", "enable-filesystem", "push", "fetch", "fsck":
 	default:
 		return fmt.Errorf("unknown command %q; run pebble help", cmd)
 	}
@@ -89,7 +95,7 @@ func run(args []string, cwd string, w io.Writer) error {
 		p := filepath.Join(cwd, ".pebbleignore")
 		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 		if err == nil {
-			_, writeErr := f.WriteString("# Pebble ignore patterns (not Git ignore syntax)\n.pebble/\n.git/\n*.log\n")
+			_, writeErr := f.WriteString("# Git-compatible ignore patterns; loaded after .gitignore in this directory\n.pebble/\n.git/\n*.log\n")
 			closeErr := f.Close()
 			if writeErr != nil {
 				return writeErr
@@ -115,6 +121,58 @@ func run(args []string, cwd string, w io.Writer) error {
 		return err
 	}
 	switch cmd {
+	case "check-ignore":
+		verbose := false
+		if len(params) > 0 && (params[0] == "-v" || params[0] == "--verbose") {
+			verbose, params = true, params[1:]
+		}
+		if len(params) > 0 && params[0] == "--" {
+			params = params[1:]
+		}
+		if len(params) == 0 {
+			return errors.New("usage: pebble check-ignore [-v|--verbose] [--] <path>...")
+		}
+		names := make([]string, 0, len(params))
+		for _, input := range params {
+			p := input
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(cwd, p)
+			}
+			name, err := filepath.Rel(repo.RootPath(), p)
+			if err != nil || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("path outside repository: %q", input)
+			}
+			name = filepath.ToSlash(name)
+			if strings.HasSuffix(input, "/") || strings.HasSuffix(input, string(filepath.Separator)) {
+				name += "/"
+			}
+			names = append(names, name)
+		}
+		results, err := repo.CheckIgnore(names)
+		if err != nil {
+			return err
+		}
+		matched := false
+		for i, result := range results {
+			if verbose {
+				state := "unmatched"
+				if result.Tracked {
+					state = "tracked"
+				} else if result.Ignored {
+					state = "ignored"
+				} else if result.Source != "" {
+					state = "included"
+				}
+				fmt.Fprintf(w, "%s:%d:%s\t%s\t%s\n", result.Source, result.Line, result.Pattern, params[i], state)
+				matched = matched || result.Source != ""
+			} else if result.Ignored {
+				fmt.Fprintln(w, params[i])
+				matched = true
+			}
+		}
+		if !matched {
+			return errNoIgnoredPaths
+		}
 	case "enable-filesystem":
 		if len(params) != 0 {
 			return errors.New("usage: pebble enable-filesystem")

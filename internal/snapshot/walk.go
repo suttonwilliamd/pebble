@@ -10,11 +10,7 @@ import (
 // or invoking the legacy object codec. Tracked ignored paths remain the caller's
 // responsibility. Symlinks and special files fail instead of being skipped.
 func WalkFiles(root string, visit func(string, os.FileInfo) error) error {
-	patterns, err := ReadIgnore(root)
-	if err != nil {
-		return err
-	}
-	generator := NewFileIndexGenerator(root, patterns)
+	generator := NewFileIndexGenerator(root)
 	return filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -22,7 +18,11 @@ func WalkFiles(root string, visit func(string, os.FileInfo) error) error {
 		if p == root {
 			return nil
 		}
-		if generator.ShouldIgnore(p, info.IsDir()) {
+		ignored, err := generator.shouldIgnore(p, info.IsDir())
+		if err != nil {
+			return err
+		}
+		if ignored {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}

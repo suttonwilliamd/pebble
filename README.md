@@ -112,8 +112,8 @@ To undo edits or recover a deleted tracked file, run `pebble restore path/to/fil
 without changing history and restores the stored regular-file or link type.
 It does not authorize discarding a nonempty directory or later external edits.
 
-Commits include **all non-ignored files**, additions and deletions; there is no
-staging area. Unchanged commits are rejected. Status uses committed HEAD, not an
+Commits include **all tracked and non-ignored untracked files**, additions and
+deletions; there is no staging area. Unchanged commits are rejected. Status uses committed HEAD, not an
 index cache. Untracked files may survive checkout unless they collide with a
 target leaf, in which case checkout refuses unless literal bytes and observable
 type/mode are identical (then the existing identity is adopted without rewriting).
@@ -171,13 +171,41 @@ automatically. See [migration details](docs/store-v2.md#pb-08-explicit-verified-
 
 ### Ignore rules
 
-`.pebbleignore` supports blank lines, `#` comments, `*.log` globs, `build/`
-directory rules, `/root-only.txt` anchoring and `assets/cache/` relative paths.
-Patterns without a slash match names at any depth. Use `/` separators, including
-on Windows. Rules only exclude untracked files; already tracked files stay
-tracked. **This is not Git ignore syntax:** negation (`!`), `**`, escaping and
-backslashes are unsupported (negation, `**` and backslashes produce errors).
-Review `pebble status` for secrets before committing; `.gitignore` is not read.
+Pebble reads `.gitignore` and `.pebbleignore` in each reachable directory using
+Git-style patterns: ordered `!` negation, escaped `#`, `!` and spaces, `*`, `?`,
+character classes, `**`, `/root-only` anchoring, basename and directory-only rules.
+Use `/` separators on every platform. Blank lines and unescaped leading `#` are
+comments; unescaped trailing spaces are discarded. Matching is case-sensitive.
+
+Rules layer from the root toward the path: **deeper directory rules override
+ancestor rules; `.pebbleignore` follows `.gitignore` at the same directory; the
+last applicable match wins**. A negation cannot reinclude a file while its parent
+directory remains excluded, and rules inside excluded directories are not read.
+For example, use `cache/*` and `!cache/keep/` rather than `cache/` and
+`!cache/keep/file` to reopen descendants.
+
+Already tracked files stay tracked, including modifications and deletions beneath
+newly ignored directories. `.pebble` (including recovery archives/preimages) and
+`.git` components remain protected regardless of negation. Rule files must be
+ordinary files: linked/replaced/unsafe rule files fail closed, never fall back to
+dereferencing external data.
+
+`pebble check-ignore <path>...` prints excluded untracked paths; exit status is 0
+if any are excluded, 1 otherwise. `-v` / `--verbose` prints
+`source:line:pattern<TAB>path<TAB>ignored|included|tracked|unmatched` for each path,
+including the winning negation or excluded-parent rule. Verbose status is 0 if a
+rule matches (including a negation), 1 otherwise. Tracked paths have no ignore
+rule; protected metadata uses `<metadata>:0`. Paths resolve from the current
+directory, must stay inside the repository and retain Pebble's portable-path
+checks. Use `--` before paths beginning with `-`.
+
+Differences from Git: `.pebbleignore` is an additional per-directory layer;
+personal/global excludes and `.git/info/exclude` are not read; metadata protection
+is unconditional and case-insensitive; rule-file links are errors rather than
+silently skipped; nonportable worktree paths are still rejected. Verbose output
+adds explicit result labels and tracked/unmatched rows, rather than Git's silent
+default for those rows. This is local ignore compatibility, not Git index/staging
+support. Review `pebble status` for secrets before committing.
 
 ### Safety and recovery
 

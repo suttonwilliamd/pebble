@@ -2,84 +2,70 @@ package snapshot
 
 import (
 	"fmt"
+	"io"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
 	"time"
+
+	"github.com/suttonwilliamd/pebble/internal/ignore"
 )
 
 type FileIndexGenerator struct {
-	rootPath       string
-	ignorePatterns []string
+	rootPath string
+	matcher  *ignore.Matcher
 }
 
-func NewFileIndexGenerator(root string, patterns []string) *FileIndexGenerator {
-	return &FileIndexGenerator{root, patterns}
-}
-
-// ReadIgnore supports comments, blank lines, globs, root-relative paths and directory rules.
-// Negation and ** are rejected instead of silently misinterpreted.
-func ReadIgnore(root string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Join(root, ".pebbleignore"))
-	if os.IsNotExist(err) {
-		return ParseIgnore(nil)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return ParseIgnore(data)
-}
-
-// ParseIgnore preserves the existing grammar for callers with guarded I/O.
-func ParseIgnore(data []byte) ([]string, error) {
-	patterns := []string{".pebble/", ".git/"}
-	for n, line := range strings.Split(string(data), "\n") {
-		p := strings.TrimSpace(line)
-		if p == "" || strings.HasPrefix(p, "#") {
-			continue
+func NewFileIndexGenerator(root string) *FileIndexGenerator {
+	return &FileIndexGenerator{rootPath: root, matcher: ignore.New(func(name string) ([]byte, error) {
+		p := filepath.Join(root, filepath.FromSlash(name))
+		before, err := os.Lstat(p)
+		if os.IsNotExist(err) {
+			return nil, nil
 		}
-		if strings.HasPrefix(p, "!") || strings.Contains(p, "**") || strings.Contains(p, "\\") {
-			return nil, fmt.Errorf(".pebbleignore:%d: negation, ** and backslashes are not supported", n+1)
+		if err != nil {
+			return nil, err
 		}
-		if _, err := path.Match(strings.Trim(p, "/"), ""); err != nil {
-			return nil, fmt.Errorf(".pebbleignore:%d: %w", n+1, err)
+		if !before.Mode().IsRegular() {
+			return nil, fmt.Errorf("not a regular ignore file: %s", name)
 		}
-		patterns = append(patterns, p)
-	}
-	return patterns, nil
+		// Freeze Windows' lazy pathname identity before opening the rule file.
+		if !os.SameFile(before, before) {
+			return nil, fmt.Errorf("ignore file identity unavailable: %s", name)
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		opened, err := f.Stat()
+		if err != nil {
+			return nil, err
+		}
+		if !os.SameFile(before, opened) {
+			return nil, fmt.Errorf("ignore file changed while opening: %s", name)
+		}
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return nil, err
+		}
+		after, err := os.Lstat(p)
+		if err != nil {
+			return nil, err
+		}
+		if !os.SameFile(opened, after) || opened.Size() != after.Size() || opened.ModTime() != after.ModTime() || opened.Mode() != after.Mode() {
+			return nil, fmt.Errorf("ignore file changed while reading: %s", name)
+		}
+		return data, nil
+	})}
 }
 
-// ShouldIgnore applies the existing Pebble ignore grammar to an absolute path.
-func (f *FileIndexGenerator) ShouldIgnore(file string, isDir bool) bool {
+func (f *FileIndexGenerator) shouldIgnore(file string, isDir bool) (bool, error) {
 	rel, err := filepath.Rel(f.rootPath, file)
 	if err != nil {
-		return true
+		return false, err
 	}
-	rel = filepath.ToSlash(rel)
-	// Metadata must never become part of a snapshot, even without ignore patterns.
-	for _, part := range strings.Split(rel, "/") {
-		if strings.EqualFold(part, ".pebble") || strings.EqualFold(part, ".git") {
-			return true
-		}
-	}
-	for _, p := range f.ignorePatterns {
-		p = filepath.ToSlash(p)
-		dirOnly := strings.HasSuffix(p, "/")
-		if dirOnly && !isDir {
-			continue
-		}
-		anchored := strings.HasPrefix(p, "/")
-		p = strings.Trim(p, "/")
-		candidate := rel
-		if !anchored && !strings.Contains(p, "/") {
-			candidate = path.Base(rel)
-		}
-		if match, _ := path.Match(p, candidate); match {
-			return true
-		}
-	}
-	return false
+	result, err := f.matcher.Check(filepath.ToSlash(rel), isDir)
+	return result.Ignored, err
 }
 func (f *FileIndexGenerator) GenerateIndex() (*Index, error) {
 	entries := []IndexEntry{}
@@ -90,7 +76,11 @@ func (f *FileIndexGenerator) GenerateIndex() (*Index, error) {
 		if file == f.rootPath {
 			return nil
 		}
-		if f.ShouldIgnore(file, info.IsDir()) {
+		ignored, err := f.shouldIgnore(file, info.IsDir())
+		if err != nil {
+			return err
+		}
+		if ignored {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}

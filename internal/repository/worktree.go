@@ -5,14 +5,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/suttonwilliamd/pebble/internal/snapshot"
 	"github.com/suttonwilliamd/pebble/internal/storev2"
 )
 
@@ -25,49 +23,61 @@ type workingFile struct {
 	info                   os.FileInfo
 }
 
-func (r *Repository) readFile(name string, consume func(*os.File) error) (err error) {
+func (r *Repository) readFile(name string, consume func(*os.File) error) error {
+	_, err := r.readFileWithPresence(name, consume)
+	return err
+}
+
+// Presence distinguishes an absent optional rule file from one removed during
+// opening/reading, without changing the original error shape used by recovery.
+func (r *Repository) readFileWithPresence(name string, consume func(*os.File) error) (_ bool, err error) {
 	p, err := r.safePath(name)
 	if err != nil {
-		return err
+		return false, err
 	}
 	before, err := os.Lstat(p)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !before.Mode().IsRegular() {
-		return fmt.Errorf("not a regular file: %s", name)
+		return true, fmt.Errorf("not a regular file: %s", name)
+	}
+	// Windows Lstat resolves identity lazily by pathname. Freeze it before
+	// another writer can replace that name, not during the later comparison.
+	if !os.SameFile(before, before) {
+		return true, fmt.Errorf("file identity unavailable: %s", name)
 	}
 	if err = r.boundary(context.Background(), "read-open", name); err != nil {
-		return err
+		return true, err
 	}
 	anchor, err := anchorPath(p, false)
 	if err != nil {
-		return err
+		return true, err
 	}
 	defer func() { err = errors.Join(err, anchor.close()) }()
 	f, err := anchor.openRead()
 	if err != nil {
-		return err
+		return true, err
 	}
 	defer func() { err = errors.Join(err, f.Close()) }()
 	opened, err := f.Stat()
 	if err != nil {
-		return err
+		return true, err
 	}
 	if !os.SameFile(before, opened) {
-		return fmt.Errorf("file changed while opening: %s", name)
+		return true, fmt.Errorf("file changed while opening: %s", name)
 	}
 	if err = consume(f); err != nil {
-		return err
+		return true, err
 	}
 	after, err := os.Lstat(p)
 	if err != nil {
-		return err
+		return true, err
 	}
 	if !os.SameFile(opened, after) || opened.Size() != after.Size() || opened.ModTime() != after.ModTime() || opened.Mode() != after.Mode() {
-		return fmt.Errorf("file changed while reading: %s", name)
+		return true, fmt.Errorf("file changed while reading: %s", name)
 	}
-	return nil
+	return true, nil
 }
 func (r *Repository) hashFile(name string) (workingFile, error) {
 	result := workingFile{name: name}
@@ -122,16 +132,7 @@ func (r *Repository) hashFile(name string) (workingFile, error) {
 	return result, err
 }
 func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
-	var ignoreData []byte
-	err := r.readFile(".pebbleignore", func(f *os.File) error { var e error; ignoreData, e = io.ReadAll(f); return e })
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	patterns, err := snapshot.ParseIgnore(ignoreData)
-	if err != nil {
-		return nil, err
-	}
-	ignore := snapshot.NewFileIndexGenerator(r.root, patterns)
+	matcher := r.ignoreMatcher()
 	names := map[string]bool{}
 	var walk func(string) error
 	walk = func(dir string) error {
@@ -142,12 +143,16 @@ func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
 		for _, child := range children {
 			p := filepath.Join(dir, child.Name())
 			isDirectory := child.IsDir() && child.Type()&os.ModeSymlink == 0
-			if ignore.ShouldIgnore(p, isDirectory) {
-				continue
-			}
 			relative, err := filepath.Rel(r.root, p)
 			if err != nil {
 				return err
+			}
+			result, err := matcher.Check(filepath.ToSlash(relative), isDirectory)
+			if err != nil {
+				return err
+			}
+			if result.Ignored {
+				continue
 			}
 			name := filepath.ToSlash(relative)
 			if err = validPath(name); err != nil {
@@ -163,7 +168,7 @@ func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
 		}
 		return nil
 	}
-	if err = walk(r.root); err != nil {
+	if err := walk(r.root); err != nil {
 		return nil, err
 	}
 	previous := map[string]storev2.TreeEntry{}

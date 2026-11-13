@@ -113,11 +113,7 @@ func (r *Repository) safePath(name string) (string, error) {
 	return p, nil
 }
 func (r *Repository) workingIndex() (*Index, error) {
-	patterns, err := ReadIgnore(r.rootPath)
-	if err != nil {
-		return nil, err
-	}
-	idx, err := NewFileIndexGenerator(r.rootPath, patterns).GenerateIndex()
+	idx, err := NewFileIndexGenerator(r.rootPath).GenerateIndex()
 	if err != nil {
 		return nil, err
 	}

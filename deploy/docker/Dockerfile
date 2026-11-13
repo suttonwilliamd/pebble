@@ -4,6 +4,7 @@ COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 COPY cmd/pebbled ./cmd/pebbled
 COPY internal/snapshot ./internal/snapshot
+COPY internal/ignore ./internal/ignore
 COPY internal/syncproto ./internal/syncproto
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/pebbled ./cmd/pebbled \
     && mkdir -p /out/data && chown 65532:65532 /out/data
