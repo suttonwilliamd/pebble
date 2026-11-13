@@ -63,6 +63,14 @@ corruption preflight, untracked collisions, unsafe refs/paths, writer locking,
 object tampering and streaming reconstruction/boundary equivalence. Symlink tests
 run where OS permissions allow them.
 
+Exhaustive fault/process-boundary matrices freeze one generated, quiescent
+two-commit fixture and copy it into independent roots with new files/inodes for
+each case. This avoids repeatedly publishing identical setup history; transaction
+calls, durable barriers, every discovered fault seam and recovery assertions
+remain real and unchanged. No hard links, shared writable fixture files, reduced
+case lists or increased CI timeout are used. Complete package tests execute
+serially to avoid overlapping CLI/repository/store filesystem-heavy workloads.
+
 ## Next implementation priorities
 
 1. **Recoverable checkout qualification.** PB-09 adds durable roll-forward intent
