@@ -62,20 +62,20 @@ func statIdentity(st *unix.Stat_t) string { return fmt.Sprintf("%x:%x", st.Dev, 
 
 // POSIX rename cannot predicate the source inode. If the unavoidable final
 // syscall window exposes substitution, reverse without replacing ANY public
-// entry. If reversal is blocked, retain every version and report the observable
-// namespace discrepancy; private retention is not called public restoration.
+// entry. A blocked reversal remains pending for explicit automatic reconciliation;
+// private retention alone is not called canonical public restoration.
 func restoreUnexpectedMove(from, to *pathAnchor, source, target, moved string, reason error) error {
 	var st unix.Stat_t
 	if err := unix.Fstatat(to.parent, to.leaf, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil || statIdentity(&st) != moved {
-		return errors.Join(fmt.Errorf("rename recovery ownership changed; preserve public %s and retained %s", source, target), reason, err)
+		return errors.Join(fmt.Errorf("rename recovery ownership changed; public %s and retained %s require identity-checked pebble recover", source, target), reason, err)
 	}
 	if err := renameAnchoredExclusive(to.parent, to.leaf, from.parent, from.leaf); err != nil {
-		return errors.Join(fmt.Errorf("cannot restore source directory entry %s without changing intervening work; unexpected identity %s retained at %s; preserve all paths and journal for operator recovery", source, moved, target), reason, err)
+		return errors.Join(fmt.Errorf("cannot immediately restore source directory entry %s without changing intervening work; unexpected identity %s retained at %s; pebble recover will reconcile without replacement or retain a receipted alternate", source, moved, target), reason, err)
 	}
 	syncErr := errors.Join(unix.Fsync(from.parent), unix.Fsync(to.parent))
-	return errors.Join(fmt.Errorf("source directory entry restored through its pinned original parent after a rename race; verify any rebound parent of %s and preserve journal: %w", source, reason), syncErr)
+	return errors.Join(fmt.Errorf("source entry returned through its pinned original parent after a rename race; pebble recover will reconcile any rebound public parent of %s: %w", source, reason), syncErr)
 }
-func anchoredMove(source, target, identity string, image *fileImage, check, before, after, parents, barrier func() error) (err error) {
+func anchoredMove(source, target, identity string, image *fileImage, publicSource bool, check, before, after, parents, barrier func() error) (err error) {
 	from, err := anchorPath(source, true)
 	if err != nil {
 		return err
@@ -130,6 +130,9 @@ func anchoredMove(source, target, identity string, image *fileImage, check, befo
 	if err = before(); err != nil {
 		return err
 	}
+	if err = parents(); err != nil {
+		return err
+	}
 	if err = renameAnchoredExclusive(from.parent, from.leaf, to.parent, to.leaf); err != nil {
 		return err
 	}
@@ -158,7 +161,13 @@ func anchoredMove(source, target, identity string, image *fileImage, check, befo
 		}
 	}
 	if ownership != nil {
-		return restoreUnexpectedMove(from, to, source, target, moved, errors.Join(afterErr, ownership))
+		if publicSource {
+			return restoreUnexpectedMove(from, to, source, target, moved, errors.Join(afterErr, ownership))
+		}
+		// Metadata sources are locally trusted. A post-publication external
+		// destination/parent substitution is not authority to move that newer
+		// public inode into metadata. Leave it untouched for safe abort.
+		return errors.Join(afterErr, ownership)
 	}
 	if afterErr != nil {
 		return afterErr

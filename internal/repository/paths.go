@@ -17,6 +17,7 @@ func sortRefs(refs []Ref) {
 }
 
 var errPathBlocked = errors.New("snapshot ancestor is a file or symbolic link")
+var errPathAlias = errors.New("filesystem alias occupies snapshot path")
 
 func reservedWindowsName(part string) bool {
 	base := part
@@ -94,7 +95,7 @@ func (r *Repository) safePath(name string) (string, error) {
 				exact = true
 			}
 			if child.Name() != part && strings.EqualFold(child.Name(), part) {
-				return "", fmt.Errorf("case-colliding working path: %s", name)
+				return "", fmt.Errorf("%w: case-colliding working path: %s", errPathAlias, name)
 			}
 		}
 		p = filepath.Join(p, part)
@@ -106,7 +107,7 @@ func (r *Repository) safePath(name string) (string, error) {
 			return "", err
 		}
 		if !exact {
-			return "", fmt.Errorf("filesystem-alias working path: %s", name)
+			return "", fmt.Errorf("%w: filesystem-alias working path: %s", errPathAlias, name)
 		}
 		if i < len(parts)-1 && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 			return "", fmt.Errorf("%w: %s", errPathBlocked, name)

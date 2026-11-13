@@ -61,6 +61,20 @@ jobs:
         run: |
           id
           PEBBLE_REQUIRE_UNPRIVILEGED=1 go test ./internal/repository -run '^(TestReadOnlyOriginalCheckoutAndRestore|TestFilesystemPermissionFailures|TestFilesystemNativeRenameAmbiguity)$' -count=1 -timeout=5m -v
+      - name: Native automatic recovery, no-clobber receipts and actual5c4 writers
+        shell: bash
+        run: |
+          base=5c4c4532f1af8d2ea013d32fb190019961969583
+          old="$(mktemp -d "${RUNNER_TEMP//\\//}/pebble-pb10-recovery-old-XXXXXX")"
+          git cat-file -e "$base^{commit}" || git fetch --no-tags origin "$base"
+          git archive --format=tar "$base" go.mod go.sum cmd internal | tar -xf - -C "$old"
+          printf '%s\n' "$base" > "$old/BASELINE"
+          if [ "$RUNNER_OS" != Windows ]; then
+            id
+            export PEBBLE_REQUIRE_UNPRIVILEGED=1 PEBBLE_REQUIRE_LINKS=1
+          fi
+          PEBBLE_TEST_RECOVERY_OLD_SOURCE="$old" PEBBLE_REQUIRE_RECOVERY_OLD_CONSUMER=1 \
+            go test ./internal/repository ./cmd/pebble -run '^(TestAutomaticRecovery.*|TestFilesystemAutomaticRecovery.*|TestFilesystemNativeRenameAmbiguity)$' -count=1 -timeout=12m -v
       - name: Test
         run: go test ./... -count=1 -timeout=12m
       - name: Race detection

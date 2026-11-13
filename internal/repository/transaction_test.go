@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -389,9 +390,45 @@ func TestRecoveryPreservesExternalEdits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			before := publicSnapshot(t, f.r.root)
+			var restored []string
+			switch which {
+			case "installed", "identical-replacement":
+				restored = []string{"removed"}
+			case "directory":
+				restored = []string{"a.bin", "removed"}
+			}
+			identities := map[string]string{}
+			plan, err := f.r.readIntent()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range restored {
+				for i, file := range plan.Files {
+					if file.Path == name {
+						identities[name], err = filesystemIdentity(filepath.Join(f.r.journalPath(), retainedName(i)))
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}
+			receipt := automaticAbort(t, f.r, head)
+			assertReconciledPublic(t, f.r, before, receipt, restored...)
+			for _, name := range restored {
+				got, err := os.ReadFile(filepath.Join(f.r.root, name))
+				if err != nil || !bytes.Equal(got, f.old[name]) {
+					t.Fatalf("automatic original restoration %s: %x %v", name, got, err)
+				}
+				if id, err := filesystemIdentity(filepath.Join(f.r.root, name)); err != nil || id != identities[name] {
+					t.Fatalf("automatic original inode %s: %s want %s: %v", name, id, identities[name], err)
+				}
+			}
+			preservedVersion(t, receipt, "a.bin", "original", f.old["a.bin"])
 			for i := 0; i < 2; i++ {
-				if err = f.r.Recover(context.Background()); err == nil {
-					t.Fatal("external edit overwritten or adopted")
+				reopenRecovery(t, &f)
+				if err = f.r.Recover(context.Background()); err != nil {
+					t.Fatal(err)
 				}
 				got, err := os.ReadFile(filepath.Join(f.r.root, filepath.FromSlash(path)))
 				if err != nil || !bytes.Equal(got, precious) {
@@ -462,7 +499,12 @@ func TestRecoveryRejectsCorruptOrIncompleteJournal(t *testing.T) {
 			case "checksum":
 				data = bytes.Replace(data, []byte(`"SHA256":"`), []byte(`"SHA256":"bad`), 1)
 			case "unsupported":
-				data = bytes.Replace(data, []byte(`"Version":2`), []byte(`"Version":0`), 1)
+				var envelope journalEnvelope
+				if err = json.Unmarshal(data, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				envelope.Version = 0
+				data, err = json.Marshal(envelope)
 			case "missing-intent":
 				err = os.Remove(path)
 			case "missing-stage":

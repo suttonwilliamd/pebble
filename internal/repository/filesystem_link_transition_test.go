@@ -112,32 +112,27 @@ func TestFilesystemLinkRestoreRecoveryPreservesLaterEdit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
-		if err = r.Recover(context.Background()); err == nil {
-			t.Fatal("old restore intent erased later edit")
-		}
-		assertPublicSnapshot(t, r.root, before)
+	currentHead, err := r.GetHead()
+	if err != nil {
+		t.Fatal(err)
 	}
+	receipt := automaticAbort(t, r, currentHead)
+	assertReconciledPublic(t, r, before, receipt)
+	preservedVersion(t, receipt, "node", "original", []byte("authorized initial discard"))
 	if id, err := r.CurrentID(); err != nil || id != head {
 		t.Fatalf("HEAD changed: %s %v", id, err)
 	}
-	if !journalExists(t, r) {
-		t.Fatal("refusal discarded original recovery intent")
-	}
-	// The operator, not recovery, preserves/removes the conflicting public entry.
-	if err = os.Rename(filepath.Join(r.root, "node"), filepath.Join(r.root, "saved-later-edit")); err != nil {
-		t.Fatal(err)
-	}
 	for i := 0; i < 2; i++ {
+		r, err = Open(r.root)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err = r.Recover(context.Background()); err != nil {
 			t.Fatal(err)
 		}
+		assertPublicSnapshot(t, r.root, before)
 	}
-	link, err := readLink(filepath.Join(r.root, "node"))
-	if err != nil || link.target != "literal-dangling" {
-		t.Fatalf("retry target: %+v %v", link, err)
-	}
-	if got, err := os.ReadFile(filepath.Join(r.root, "saved-later-edit")); err != nil || string(got) != "foreign edit after interruption" {
-		t.Fatalf("operator-preserved edit lost: %q %v", got, err)
+	if got, err := os.ReadFile(filepath.Join(r.root, "node")); err != nil || string(got) != "foreign edit after interruption" {
+		t.Fatalf("automatic recovery changed later public edit: %q %v", got, err)
 	}
 }

@@ -108,7 +108,7 @@ func (a *pathAnchor) openRead() (*os.File, error) {
 // Rename the opened source identity, not a subsequently substituted name.
 // Writable handles are required by FlushFileBuffers, including directories.
 // No replacement, copy/delete fallback or suppressed barrier failures.
-func anchoredMove(source, target, identity string, image *fileImage, check, before, after, parents, barrier func() error) (err error) {
+func anchoredMove(source, target, identity string, image *fileImage, _ bool, check, before, after, parents, barrier func() error) (err error) {
 	from, err := anchorPath(source, true)
 	if err != nil {
 		return err
@@ -178,6 +178,9 @@ func anchoredMove(source, target, identity string, image *fileImage, check, befo
 	}
 	var iosb windows.IO_STATUS_BLOCK
 	if err = windows.NtSetInformationFile(h, &iosb, &data[0], uint32(len(data)), windows.FileRenameInformation); err != nil {
+		if status, ok := err.(windows.NTStatus); ok {
+			err = status.Errno()
+		}
 		return fmt.Errorf("renaming owned handle %s to %s: %w", source, target, err)
 	}
 	if err = after(); err != nil {

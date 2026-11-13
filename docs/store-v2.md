@@ -35,13 +35,21 @@ legacy writers use PB-09's persistent-guard protocol; actual baseline consumers,
 including already-open handles and pre-lock pauses, are exercised separately.
 Marker-only/noncooperating writers are not a supported concurrent protocol.
 
-New version-2 worktree journals also protect regular-only transitions in an
-old-marker root from old recovery. New code can replay version-1 intents; it
-does not convert/delete old pending intent. Original leaves move into retained
-slots first; empty blocking directories move deepest-first into `old-dir-*`;
-new directories install parent-first, then target leaves install without replacement.
-Untracked children (including empty subdirectories) are rejected before intent.
-Unexpected later children/edits/replacements stop recovery and remain preserved.
+New version-3 worktree journals protect regular-only transitions in old-marker
+roots as well as link/directory operations. PB-09 and the earlier PB-10 v2 reader
+reject v3 before replay. New code still replays valid v1/v2 intents. On an explicit
+conflicting recovery, it preserves the exact old envelope as `legacy-intent.json`
+before publishing a local v3 abort checkpoint; objects, IDs and markers are not
+rewritten. Old consumed targets lack move tickets: this evidence permits only
+conservative abort with independently backed originals, never target success.
+An absent old original is reconstructed only when its recorded size/SHA-256/type
+matches pinned immutable history. Unknown dirty bytes overwritten before old
+code retained them are irrecoverable; the old intent and remaining versions stay
+pending rather than being fabricated.
+Original leaves move into retained slots first; empty blocking directories move
+deepest-first into `old-dir-*`; new directories install parent-first, then target
+leaves install without replacement. Untracked children (including empty
+subdirectories) are rejected before intent.
 An existing empty blocking directory can be retained; empty directories still
 are not standalone snapshot entries. Restore discards only its selected leaf's
 original edits, not later edits or arbitrary directory descendants.
@@ -57,22 +65,46 @@ handles. Windows pins ancestors against deletion, renames the opened source
 identity relative to the destination handle with no replacement, then flushes
 the writable source and both parent handles. POSIX uses directory-relative
 no-follow access, pinned source identities, exclusive rename and parent fsync.
-POSIX has no atomic source-inode predicate for rename. A substitution detected
-after the syscall is reversed exclusively through the original pinned parent
-when its source entry remains vacant; public path/type/target/bytes are checked
-in regression tests, not inferred from private retention. A rebound parent is
-reported, not traversed. If intervening work, permissions or a removed parent
-blocks reversal, that public entry cannot be restored automatically: every
-version remains preserved, HEAD does not advance, and the error identifies the
-public/retained locations for operator recovery. Do not count this ambiguity as
-an unchanged public namespace or force a retry over it.
-This is not an unconditional before-mutation/public-namespace guarantee against
-noncooperating concurrent substitutions; the residual POSIX case remains an
-explicit qualification boundary, not proof that the acceptance condition is met.
-Filesystem metadata under `.pebble` remains locally trusted; this is not a hostile-filesystem sandbox.
-Keep editors quiescent; after a conflict back up all live and retained material
-and resolve ownership/capability/permissions before retry. No force/abort path,
-privilege/ACL change, link-target copy fallback or hardware power-loss claim.
+POSIX has no atomic source-inode predicate for rename. Public-source retention
+uses exclusive reversal through its pinned original parent when possible.
+Metadata-origin moves instead leave an unexpected newer public destination
+untouched; reversal is not authority to move that external inode into metadata.
+Parent bindings are rechecked immediately before rename as well as afterward.
+Public path/type/target/bytes are checked in regression tests, not inferred from
+private retention. A rebound parent is not traversed. If immediate retention
+reversal is blocked, explicit `recover` automatically
+reconciles: return owned originals through verified vacant names with exclusive
+moves, otherwise retain accessible alternate versions in the first-class
+`.pebble/recovery/archives/<transaction>/` archive. Newer public entries are never
+moved aside or overwritten to make an old intent fit. Independent preimages and
+saved displaced versions survive canonical return and later edits.
+
+The immutable checksummed `repair.json` pins intent/root/journal identities,
+original/requested commit IDs, physical sources and independently saved versions.
+Durable location receipts precede no-clobber publication of the whole journal
+directory into the archive. A colliding archive name chooses a fresh receipted
+candidate on the next explicit recovery, preserving the intervening entry.
+Retirement is acknowledged only after repair, guarded prior-HEAD publication and
+required barriers. `RecoveryAbortedError` distinguishes a finished reconciliation
+from successful requested checkout/restore. `RecoveryReceipts` and every CLI
+`recover` expose exact accessible version paths and the abort result even if the
+process died after archive publication but before responding. Repeated recovery
+never reuses a consumed source to erase a subsequent public edit.
+
+Archives/receipts stay inside existing `.pebble` metadata exclusion, including for
+already-open/pre-lock/post-retirement earlier PB-10 writers. No public prefix
+exclusion, marker auto-upgrade or generic ignore feature is introduced; ordinary
+lookalike user/history paths remain ordinary committed data.
+Actual permission denial or an inaccessible root can prevent required repair or
+durability writes. The active intent remains pending with the OS obstacle until
+access permits an explicit retry; no chmod, escalation or busy retry occurs.
+Changed history pins, corrupt evidence and unsupported filesystem objects remain
+fail-closed. Local metadata is trusted, not a hostile-filesystem sandbox.
+There is no unconditional before-mutation guarantee or atomic multi-path/HEAD
+transaction against noncooperating external writers. Automatic safe reconciliation
+does not claim a briefly displaced public name was never moved, and alternate
+placement does not claim canonical restoration. No link-target copying fallback
+or hardware power-loss qualification is implied.
 
 ## PB-09: recoverable checkout and restore
 
@@ -86,13 +118,20 @@ oversized plans fail before any working-path mutation.
 
 Intent pins source/target symbolic HEAD and commit IDs, the exact affected path
 set, original/target identities, literal bytes/hashes, link types, executable modes
-and modification times, plus existing/new/retained directory identities. Target leaves
-are synced and closed in a private `worktree-stage-*` directory; publishing the
+and modification times, plus existing/new/retained directory identities. Target
+leaves and independent `before-*` preimages of originals the engine may move are
+synced and closed in a
+private `worktree-stage-*` directory before intent publication; publishing the
 whole stage reuses migration's file/directory barriers and no-replace publication.
-Original files are synced before intent, then atomically moved into retained
-`old-*` slots; verified targets move out of `new-*` slots without replacement.
+Original files then move into retained `old-*` slots; verified targets move out
+of `new-*` slots without replacement. V3 consumption tickets precede target and
+new-directory installation; retained slots/preimages already encode retention.
+Ticket publication checks root ownership; public moves and HEAD still validate
+history/worktree and graph pins at their existing guarded boundaries.
 Directory creation is likewise a recorded, no-replace directory move. These
 identities and locations encode progress without a mutable last-step counter.
+Unchanged `Keep` leaves are not copied or recreated: a later external deletion
+stays a deletion, with the original bytes still in pinned immutable history.
 POSIX originals are synced through read-only descriptors: a readable `0444` file
 or `0555` executable does not need file-write permission for checkout/restore
 when the parent is writable. Windows retains its writable-handle requirement for
@@ -100,16 +139,14 @@ when the parent is writable. Windows retains its writable-handle requirement for
 
 `Repository.CheckoutContext`, `RestoreContext` and `Recover(context.Context)`
 support cancellation. Existing Checkout/Restore signatures remain. Reopen is
-read-only; `pebble recover` explicitly resumes the pending original intent.
+read-only; `pebble recover` explicitly resumes or safely aborts the pending intent.
 All recovery material, branch pins and affected live paths are checked before
 resuming. Recovery never infers ownership from matching bytes alone. Unexpected
-edits/deletions/replacements, aliases, non-files, directory substitution, missing
-material, invalid checksums/versions/shape and branch changes return errors,
-retaining the journal. Resolve conflicts only after preserving both the complete
-directory and retained material; there is no force/abort command.
-
-Recovery rolls forward, not back: it completes the original branch checkout or
-the explicitly requested discard-one-tracked-file restore. It can be repeated.
+public edits/replacements initiate the automatic reconciliation described above;
+missing/corrupt unconsumed v3 material, invalid checksums/versions/shape or changed
+history remain pending errors. No force command or user filename repair is needed
+for a completed automatic abort. Normal roll-forward still completes the original
+checkout or explicitly requested single-file restore, and can be repeated.
 Before HEAD CAS, completed namespaces are re-barriered (POSIX directory fsync;
 Windows writable no-follow file/directory handle FlushFileBuffers). HEAD retries
 re-publish through store validation/CAS/barriers, including when already equal.
@@ -135,9 +172,9 @@ rewriting them. Restore still explicitly discards only its selected tracked
 file's edits, retaining that original until completion. Unrelated files are
 untouched. Existing case/normalization/path and corruption guards remain.
 PB-10 adds journaled file/directory transitions without changing ignore grammar.
-Editors and other noncooperating namespace writers must remain quiescent. The
-PB-10 native reversal and explicit public/retained ambiguity boundary above apply;
-private byte retention alone does not establish an unchanged public namespace.
+Editors and other noncooperating namespace writers should remain quiescent.
+The PB-10 automatic reconciliation and explicit concurrency boundaries above
+apply; private byte retention alone does not establish an unchanged public name.
 These guards are not an adversarial filesystem sandbox or hardware/controller
 power-loss certification.
 

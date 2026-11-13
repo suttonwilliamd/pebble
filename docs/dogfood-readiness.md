@@ -94,8 +94,14 @@ Special files, empty directory snapshots and full permission/ACL preservation
 remain unsupported. Literal links require capability-aware readers/writers and
 actual host support; incapable hosts refuse materialization without copying
 targets or dropping historical metadata. Local metadata must be trusted. Keep
-files quiescent during snapshot/checkout/restore/recovery; later conflicts stop
-recovery rather than authorizing overwrite.
+files quiescent during snapshot/checkout/restore/recovery. Later public conflicts
+now trigger safe automatic abort: newer public entries stay untouched, original
+names return only when vacant/owned, and alternate versions plus discoverable
+receipts stay under `.pebble/recovery`. A fresh/repeated `recover` prints paths
+and the aborted result, not target success. Required permission/barrier failures
+remain pending until safe retry. This is not atomic multi-path/HEAD publication
+against arbitrary external writers, and process-kill proof is not power-loss
+qualification. Old journals may lack dirty preimages that old code never saved.
 
 The original README comparison that Git "stores full snapshots" and therefore
 necessarily bloats binaries was misleading: Git models snapshots but also uses

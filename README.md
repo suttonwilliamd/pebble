@@ -14,7 +14,8 @@ and independent backups while dogfooding.
 - Checkout refuses dirty tracked files, untracked/ignored file collisions, unsafe
   paths and corrupt target objects before changing files.
 - Explicit single-file recovery from HEAD with `pebble restore <file>`.
-- Durable checkout/restore journals and explicit `pebble recover` roll-forward.
+- Durable checkout/restore journals and explicit `pebble recover`, including
+  automatic no-clobber abort/reconciliation with discoverable preserved versions.
 - Literal symbolic-link targets/types, observable executable identity, and
   recoverable file/directory transitions without deleting untracked children.
 - Integrity verification of every stored object/copy and all refs with `pebble fsck`,
@@ -184,29 +185,45 @@ Review `pebble status` for secrets before committing; `.gitignore` is not read.
   serialize cooperating Pebble processes, not editors. Metadata is locally trusted;
   do not open a malicious `.pebble` directory or mix old/new Pebble writers.
 - After interruption, back up the entire directory, run `pebble fsck`, then
-  `pebble recover`. Reopening never silently mutates files. Recovery finishes the
-  original checkout/restore, not a new command or an automatic rollback.
+  `pebble recover`. Reopening is read-only. An unchanged valid transaction rolls
+  forward; later public edits instead trigger automatic safe abort/reconciliation.
+  **An aborted checkout/restore is not successful target publication.**
 - Pending `.pebble/worktree-journal` blocks commit, branch, checkout, restore and
-  status. Target bytes and intent are durable before working paths change.
-  Replaced/removed originals (including restore's discarded edits) stay in
-  `old-*` slots until completion; blocking directories use `old-dir-*` slots.
-  Do not edit/delete recovery files.
-- Recovery checks recorded filesystem identities, bytes, modes and directory
-  spellings. Later edits, replacements (even identical bytes), untracked collisions,
-  aliases, changed branches, missing/corrupt/unsupported intent or barrier errors
-  fail closed. Preserve the journal and files for inspection; do not force recovery.
-  POSIX cannot atomically predicate rename on a source inode. A detected final
-  rename-window substitution is reversed without replacement where possible;
-  intervening entries/permissions can block reversal. The error then identifies
-  preserved public/retained versions for operator recovery; HEAD is not advanced.
+  status. Version-3 journals durably copy leaves the engine may move (including
+  restore's dirty contents) before mutation; native originals and empty blocking
+  directories are also retained during moves. Do not edit/delete active recovery
+  material.
+- Recovery leaves newer public entries untouched. It returns displaced originals
+  to vacant, identity-verified canonical names without replacement. If a newer
+  entry or missing/rebound parent owns that namespace, it automatically preserves
+  alternate versions under `.pebble/recovery/archives/<transaction>/`.
+  Durable receipts under `.pebble/recovery/receipts/` record exact paths, prior and
+  requested commit IDs and the abort reason. Every `pebble recover`, including
+  after process death following intent retirement, prints those paths and the
+  aborted-operation result. No manual filename move is needed to clear an abort.
+  Archives use existing metadata exclusion, not new user-path ignore rules.
+- Required repair or durability writes denied by permissions/inaccessible roots
+  remain pending with the actual OS error; recovery never chmods, escalates or
+  spins. Restore access and rerun `recover`; it resumes idempotently without
+  overwriting intervening edits. Corrupt/unsupported records, changed history
+  pins or lost legacy preimages likewise never become false success.
+  Supported old v1/v2 replay remains available. An explicit conflicting recovery
+  preserves the exact old envelope before a local v3 abort checkpoint. Missing
+  originals may be reconstructed from matching pinned history; unknown old dirty
+  bytes overwritten before old code saved them cannot be recreated.
+- POSIX cannot predicate rename on a source inode. A final-window substitution
+  may temporarily move a public name before detection. Exclusive reversal and
+  automatic reconciliation preserve versions, but do not make arbitrary external
+  namespace edits or all paths plus HEAD atomic. A newer canonical entry is never
+  replaced to pretend the original name was restored.
 - New persistent `.pebble/worktree.guard` and `write.guard` use OS process locks,
   released on exit. Never unlink guard files. Legacy `worktree.lock`/`write.lock`
   markers still require manual inspection and confirmation no old writer is live.
   Interrupted initialization also needs manual inspection, not retry/reset.
 - Successful completion means files and symbolic HEAD have passed platform
   durability barriers. V2 has no mutable staging index: status derives from HEAD.
-  Process-kill tests are not hardware power-loss qualification. Concurrent editors
-  remain unsupported: detected ownership/byte changes stop recovery, never force it.
+  Process-kill tests are not hardware power-loss qualification. Keep editors
+  quiescent; no force command or unconditional concurrent-editor guarantee exists.
 
 ## Remote test service
 

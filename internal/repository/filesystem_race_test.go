@@ -165,20 +165,17 @@ func TestFilesystemMutationRaces(t *testing.T) {
 					}
 				} else {
 					t.Logf("performed %s substitution at %s; exact public namespace preserved", kind, point)
-					before := fixtureSnapshot(t, r.root)
-					if err = r.Recover(context.Background()); err == nil {
-						t.Fatal("recovery claimed later replacement")
+					receipt := automaticAbort(t, r, "heads/before")
+					assertReconciledPublic(t, r, expected, receipt)
+					preservedVersion(t, receipt, "dir/tracked", "original", []byte("owned original"))
+					r, err = Open(r.root)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err = r.Recover(context.Background()); err != nil {
+						t.Fatal(err)
 					}
 					assertPublicSnapshot(t, r.root, expected)
-					after := fixtureSnapshot(t, r.root)
-					if len(before) != len(after) {
-						t.Fatal("recovery removed foreign data")
-					}
-					for name, want := range before {
-						if after[name] != want {
-							t.Fatalf("recovery changed %s", name)
-						}
-					}
 				}
 			})
 		}

@@ -183,7 +183,7 @@ func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead
 	if err = preflightFilesystemPaths(dir, target); err != nil {
 		return err
 	}
-	plan := worktreeIntent{Kind: kind, RestorePath: name, BeforeHead: beforeHead, AfterHead: afterHead, BeforeID: beforeID, AfterID: afterID}
+	plan := worktreeIntent{Kind: kind, RestorePath: name, BeforeHead: beforeHead, AfterHead: afterHead, BeforeID: beforeID, AfterID: afterID, RecoveryID: filepath.Base(dir), version: 3}
 	before, after := map[string]storev2.TreeEntry{}, map[string]storev2.TreeEntry{}
 	names := map[string]bool{}
 	for _, e := range old {
@@ -255,6 +255,19 @@ func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead
 		// Flush them before intent: restore's dirty original may not be in the store.
 		if original != nil {
 			if err = syncOriginal(p); err != nil {
+				return err
+			}
+		}
+		if original != nil && !file.Keep {
+			backup, err := r.copyImage(ctx, path, dir, original)
+			if err != nil {
+				return err
+			}
+			if err = os.Rename(backup, filepath.Join(dir, preimageName(i))); err != nil {
+				return err
+			}
+			file.Backup, err = inspectImage(&Repository{root: dir}, preimageName(i))
+			if err != nil {
 				return err
 			}
 		}

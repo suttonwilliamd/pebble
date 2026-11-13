@@ -54,8 +54,16 @@ func TestFilesystemRejectsJunctionRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = r.Recover(context.Background()); err == nil {
-		t.Fatal("recovery traversed/adopted directory junction")
+	receipt := automaticAbort(t, r, "heads/before")
+	preservedVersion(t, receipt, "dir/tracked", "original", []byte("owned original"))
+	for i := 0; i < 2; i++ {
+		r, err = Open(r.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = r.Recover(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if after, err := filesystemIdentity(junction); err != nil || after != beforeIdentity {
 		t.Fatalf("junction public identity changed: %s %v", after, err)
@@ -72,7 +80,7 @@ func TestFilesystemRejectsJunctionRecovery(t *testing.T) {
 	if id, err := r.CurrentID(); err != nil || id != head {
 		t.Fatalf("HEAD changed: %s %v", id, err)
 	}
-	if !journalExists(t, r) {
-		t.Fatal("unsafe junction recovery discarded intent")
+	if journalExists(t, r) {
+		t.Fatal("no-follow automatic abort left an active intent")
 	}
 }

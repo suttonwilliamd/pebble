@@ -233,10 +233,39 @@ func run(args []string, cwd string, w io.Writer) error {
 		if len(params) != 0 {
 			return errors.New("usage: pebble recover")
 		}
-		if err := repo.Recover(context.Background()); err != nil {
+		recoveryErr := repo.Recover(context.Background())
+		var aborted *repository.RecoveryAbortedError
+		if recoveryErr != nil && !errors.As(recoveryErr, &aborted) {
+			return recoveryErr
+		}
+		receipts, err := repo.RecoveryReceipts()
+		if err != nil {
 			return err
 		}
-		_, err := fmt.Fprintln(w, "Working-tree recovery complete (or no pending operation)")
+		for _, receipt := range receipts {
+			fmt.Fprintf(w, "Aborted %s; requested operation was NOT completed; preserved versions: %s\n", receipt.Operation, receipt.Directory)
+			fmt.Fprintf(w, "Prior HEAD: %s (%s); requested HEAD: %s (%s)\n", receipt.BeforeHead, receipt.BeforeID, receipt.RequestedHead, receipt.RequestedID)
+			fmt.Fprintln(w, "Reason:", receipt.Reason)
+			for _, restored := range receipt.Restorations {
+				action := "Automatic alternate placement"
+				if restored.Canonical {
+					action = "Restored canonical name"
+				}
+				state := ""
+				if restored.Changed {
+					state = " (public name subsequently changed; saved version retained)"
+				}
+				fmt.Fprintf(w, "%s: %s -> %s%s\n", action, restored.Path, restored.Location, state)
+			}
+			for _, version := range receipt.Versions {
+				state := ""
+				if version.Changed {
+					state = " (subsequently changed or removed; not overwritten)"
+				}
+				fmt.Fprintf(w, "  %s %s -> %s%s\n", version.Role, version.Path, version.Location, state)
+			}
+		}
+		_, err = fmt.Fprintln(w, "Working-tree recovery complete (or no pending operation)")
 		return err
 	case "fsck":
 		if len(params) != 0 {

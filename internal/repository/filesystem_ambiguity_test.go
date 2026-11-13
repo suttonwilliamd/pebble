@@ -4,23 +4,22 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
 func TestFilesystemNativeRenameAmbiguity(t *testing.T) {
-	if os.Geteuid() == 0 {
-		if os.Getenv("PEBBLE_REQUIRE_UNPRIVILEGED") == "1" {
-			t.Fatal("rollback permission proof requires a non-root process")
-		}
-		t.Skip("root cannot qualify permission-blocked rollback")
-	}
+	requireRecoveryUnprivileged(t)
 	for _, which := range []string{"intervening-entry", "permission-change"} {
 		t.Run(which, func(t *testing.T) {
 			r := mutationFixture(t)
-			head, err := r.CurrentID()
+			head, err := r.GetHead()
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeID, err := r.CurrentID()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -45,48 +44,67 @@ func TestFilesystemNativeRenameAmbiguity(t *testing.T) {
 				}
 				return nil
 			}
-			err = r.Checkout("after")
-			if err == nil || !strings.Contains(err.Error(), "cannot restore source directory entry") {
-				t.Fatalf("rollback ambiguity not surfaced: %v", err)
-			}
-			if !replaced || !intervened {
-				t.Fatal("native rename/rollback windows not reached")
+			if err = r.Checkout("after"); err == nil || !replaced || !intervened {
+				t.Fatalf("performed native substitution/reversal block not detected: replaced=%t intervened=%t err=%v", replaced, intervened, err)
 			}
 			r.fault = nil
 			retained := filepath.Join(r.journalPath(), retainedName(0))
-			if !strings.Contains(err.Error(), source) || !strings.Contains(err.Error(), retained) {
-				t.Fatalf("operator recovery locations missing: %v", err)
+			displacedID, err := filesystemIdentity(retained)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if data, e := os.ReadFile(retained); e != nil || string(data) != "foreign first version" {
-				t.Fatalf("first foreign version lost: %q %v", data, e)
-			}
-			if data, e := os.ReadFile(filepath.Join(r.root, "saved-original")); e != nil || string(data) != "owned original" {
-				t.Fatalf("original version lost: %q %v", data, e)
-			}
-			if which == "intervening-entry" {
-				if data, e := os.ReadFile(source); e != nil || string(data) != "foreign later public version" {
-					t.Fatalf("intervening public version overwritten: %q %v", data, e)
-				}
-			} else {
-				if _, e := os.Lstat(source); !os.IsNotExist(e) {
-					t.Fatalf("permission-blocked source state misreported: %v", e)
-				}
-				t.Logf("observable limitation: public %s remains absent; unexpected version retained at %s; operator must preserve all versions and resolve permissions/ownership", source, retained)
-			}
-			if id, e := r.CurrentID(); e != nil || id != head {
-				t.Fatalf("HEAD advanced on rollback ambiguity: %s %v", id, e)
+			if data, err := os.ReadFile(retained); err != nil || string(data) != "foreign first version" {
+				t.Fatalf("displaced version lost before automatic recovery: %q %v", data, err)
 			}
 			public := publicSnapshot(t, r.root)
-			before := fixtureSnapshot(t, r.root)
-			if err = r.Recover(context.Background()); err == nil {
-				t.Fatal("recovery treated ambiguity as overwrite authority")
-			}
-			assertPublicSnapshot(t, r.root, public)
-			after := fixtureSnapshot(t, r.root)
-			for path, want := range before {
-				if after[path] != want {
-					t.Fatalf("failed recovery changed preserved version %s", path)
+			if which == "permission-change" {
+				if err = r.Recover(context.Background()); err == nil || !errors.Is(err, os.ErrPermission) {
+					t.Fatalf("required canonical repair did not remain pending on real write denial: %v", err)
 				}
+				if !journalExists(t, r) {
+					t.Fatal("permission-blocked canonical repair was falsely completed by archival alone")
+				}
+				assertPublicSnapshot(t, r.root, public)
+				// Fixture operator restores permissions only. No filename repair.
+				if err = os.Chmod(parent, 0755); err != nil {
+					t.Fatal(err)
+				}
+				public = publicSnapshot(t, r.root)
+			}
+			receipt := automaticAbort(t, r, head)
+			preservedVersion(t, receipt, "dir/tracked", "original", []byte("owned original"))
+			preservedVersion(t, receipt, "dir/tracked", "displaced", []byte("foreign first version"))
+			if which == "intervening-entry" {
+				if data, err := os.ReadFile(source); err != nil || string(data) != "foreign later public version" {
+					t.Fatalf("newer canonical version was overwritten: %q %v", data, err)
+				}
+				assertReconciledPublic(t, r, public, receipt)
+			} else {
+				if data, err := os.ReadFile(source); err != nil || string(data) != "foreign first version" {
+					t.Fatalf("vacant public source was not automatically repaired: %q %v", data, err)
+				}
+				if id, err := filesystemIdentity(source); err != nil || id != displacedID {
+					t.Fatalf("canonical repair did not return actual displaced inode: %s %v", id, err)
+				}
+				assertReconciledPublic(t, r, public, receipt, "dir/tracked")
+			}
+			if data, err := os.ReadFile(filepath.Join(r.root, "saved-original")); err != nil || string(data) != "owned original" {
+				t.Fatalf("original public saved version changed: %q %v", data, err)
+			}
+			if id, err := r.CurrentID(); err != nil || id != beforeID {
+				t.Fatalf("automatic abort advanced HEAD: %s %v", id, err)
+			}
+			exact := publicSnapshot(t, r.root)
+			root := r.root
+			for i := 0; i < 2; i++ {
+				r, err = Open(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = r.Recover(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				assertPublicSnapshot(t, r.root, exact)
 			}
 		})
 	}
