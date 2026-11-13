@@ -12,12 +12,12 @@ import (
 func (r *Repository) ignoreMatcher() *ignore.Matcher {
 	return ignore.New(func(name string) ([]byte, error) {
 		var data []byte
-		err := r.readFile(name, func(f *os.File) error {
+		present, err := r.readFileWithPresence(name, func(f *os.File) error {
 			var err error
 			data, err = io.ReadAll(f)
 			return err
 		})
-		if errors.Is(err, errReadStartAbsent) {
+		if !present && errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return data, err

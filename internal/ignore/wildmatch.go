@@ -92,6 +92,8 @@ func characterClass(p string, start int) (*[4]uint64, int, bool) {
 			c = p[i]
 		}
 		i++
+		// Git retains the initial literal even when a range is reversed.
+		setByte(set, c)
 		if i+1 < len(p) && p[i] == '-' && p[i+1] != ']' {
 			i++
 			end := p[i]
@@ -106,8 +108,6 @@ func characterClass(p string, start int) (*[4]uint64, int, bool) {
 				setByte(set, byte(n))
 			}
 			i++
-		} else {
-			setByte(set, c)
 		}
 	}
 	return nil, i, false

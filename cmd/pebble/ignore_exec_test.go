@@ -67,13 +67,14 @@ func TestIgnoreCLI(t *testing.T) {
 		invoke(git, root, true, "init", "-q")
 		put(".pebbleignore", "")
 		invoke(bin, root, true, "init")
-		put(".gitignore", "# comment\r\n*.log\r\n!keep.log\r\n/root.txt\r\ncache/\r\nblocked/\r\n!blocked/keep.txt\r\nopened/*\r\n!opened/keep/\r\n\\#hash\r\n\\!bang\r\nspace\\ name\r\ntrailing   \r\nedge\\ \r\na/**/b.txt\r\n**/deep.dat\r\ntrail/**\r\nfoo?bar\r\n[ab].tmp\r\n[!a].one\r\n[[:digit:]].num\r\nliteral\\[x\\]\r\n/nested/local.txt\r\n*.order\r\n!keep.order\r\n*.order\r\n!last.order\r\n?.utf8\n??.utf8\n!é.utf8\n?.byte\npair\\/leaf\n[]a].bracket\n[^x].not\nmix/a**b/end\nmiddle/**/end\n")
+		put(".gitignore", "\xef\xbb\xbfbom.txt\r\n# comment\r\n*.log\r\n!keep.log\r\n/root.txt\r\ncache/\r\nblocked/\r\n!blocked/keep.txt\r\nopened/*\r\n!opened/keep/\r\n\\#hash\r\n\\!bang\r\nspace\\ name\r\ntrailing   \r\nedge\\ \r\na/**/b.txt\r\n**/deep.dat\r\ntrail/**\r\nfoo?bar\r\n[ab].tmp\r\n[!a].one\r\n[[:digit:]].num\r\nliteral\\[x\\]\r\n/nested/local.txt\r\n*.order\r\n!keep.order\r\n*.order\r\n!last.order\r\n?.utf8\n??.utf8\n!é.utf8\n?.byte\npair\\/leaf\n[]a].bracket\n[^x].not\nmix/a**b/end\nmiddle/**/end\n[z-a].rev\n[a-c-e].range\n")
 		put("nested/.gitignore", "!error.log\n/local.txt\n*.nested\n!keep.nested\n")
 		put("nested/deeper/.gitignore", "!take.nested\n")
 		// Excluded directories' rules must not be consulted.
 		put("blocked/.gitignore", "!keep.txt\n")
 		paths := []string{"error.log", "keep.log", "plain", "root.txt", "nested/root.txt", "cache/item", "nested/cache/item", "blocked/keep.txt", "opened/no.txt", "opened/keep/yes", "#hash", "!bang", "space name", "trailing", "edge ", "a/b.txt", "a/x/y/b.txt", "a/x/c.txt", "deep.dat", "nested/deep.dat", "trail/child", "fooXbar", "a.tmp", "c.tmp", "a.one", "b.one", "3.num", "x.num", "literal[x]", "nested/error.log", "nested/local.txt", "nested/x.nested", "nested/keep.nested", "nested/deeper/take.nested", "keep.order", "last.order", "ghost/absent.log", "cache", "file/cache"}
 		paths = append(paths, "é.utf8", "é.byte", "a.byte", "pair/leaf", "].bracket", "a.bracket", "y.not", "x.not", "mix/axxb/end", "mix/a/x/b/end", "middle/end", "middle/a/b/end")
+		paths = append(paths, "bom.txt", "z.rev", "a.rev", "n.rev", "a.range", "b.range", "c.range", "d.range", "e.range", "-.range")
 		// Create ordinary portable leaves; trailing-space paths are inspect-only.
 		for _, p := range paths {
 			if p == "cache" || p == "edge " {
