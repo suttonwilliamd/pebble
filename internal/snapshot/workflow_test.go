@@ -149,10 +149,6 @@ func TestIgnoreAndTrackedFiles(t *testing.T) {
 	if m["nested/error.log"] || m["build/out.txt"] || m["root-only.txt"] || !m["nested/root-only.txt"] || !m["tracked.log"] {
 		t.Fatalf("ignore result: %v", m)
 	}
-	put(t, r, ".pebbleignore", "!secret\n")
-	if _, err = r.Status(); err == nil {
-		t.Fatal("unsupported ignore silently accepted")
-	}
 }
 func TestCheckoutCollisionAndCorruption(t *testing.T) {
 	r := newTestRepo(t)

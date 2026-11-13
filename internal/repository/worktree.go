@@ -5,14 +5,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/suttonwilliamd/pebble/internal/snapshot"
 	"github.com/suttonwilliamd/pebble/internal/storev2"
 )
 
@@ -25,6 +23,8 @@ type workingFile struct {
 	info                   os.FileInfo
 }
 
+var errReadStartAbsent = errors.New("file absent at read start")
+
 func (r *Repository) readFile(name string, consume func(*os.File) error) (err error) {
 	p, err := r.safePath(name)
 	if err != nil {
@@ -32,10 +32,18 @@ func (r *Repository) readFile(name string, consume func(*os.File) error) (err er
 	}
 	before, err := os.Lstat(p)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: %w", errReadStartAbsent, err)
+		}
 		return err
 	}
 	if !before.Mode().IsRegular() {
 		return fmt.Errorf("not a regular file: %s", name)
+	}
+	// Windows Lstat resolves identity lazily by pathname. Freeze it before
+	// another writer can replace that name, not during the later comparison.
+	if !os.SameFile(before, before) {
+		return fmt.Errorf("file identity unavailable: %s", name)
 	}
 	if err = r.boundary(context.Background(), "read-open", name); err != nil {
 		return err
@@ -122,16 +130,7 @@ func (r *Repository) hashFile(name string) (workingFile, error) {
 	return result, err
 }
 func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
-	var ignoreData []byte
-	err := r.readFile(".pebbleignore", func(f *os.File) error { var e error; ignoreData, e = io.ReadAll(f); return e })
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	patterns, err := snapshot.ParseIgnore(ignoreData)
-	if err != nil {
-		return nil, err
-	}
-	ignore := snapshot.NewFileIndexGenerator(r.root, patterns)
+	matcher := r.ignoreMatcher()
 	names := map[string]bool{}
 	var walk func(string) error
 	walk = func(dir string) error {
@@ -142,12 +141,16 @@ func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
 		for _, child := range children {
 			p := filepath.Join(dir, child.Name())
 			isDirectory := child.IsDir() && child.Type()&os.ModeSymlink == 0
-			if ignore.ShouldIgnore(p, isDirectory) {
-				continue
-			}
 			relative, err := filepath.Rel(r.root, p)
 			if err != nil {
 				return err
+			}
+			result, err := matcher.Check(filepath.ToSlash(relative), isDirectory)
+			if err != nil {
+				return err
+			}
+			if result.Ignored {
+				continue
 			}
 			name := filepath.ToSlash(relative)
 			if err = validPath(name); err != nil {
@@ -163,7 +166,7 @@ func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
 		}
 		return nil
 	}
-	if err = walk(r.root); err != nil {
+	if err := walk(r.root); err != nil {
 		return nil, err
 	}
 	previous := map[string]storev2.TreeEntry{}
