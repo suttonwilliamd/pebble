@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/suttonwilliamd/pebble/internal/storev2"
 )
@@ -132,6 +131,17 @@ func (r *Repository) hashFile(name string) (workingFile, error) {
 	return result, err
 }
 func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
+	return r.scanSelected(old, []string{"."}, false)
+}
+func selectedPath(name string, paths []string) bool {
+	for _, path := range paths {
+		if path == "." || name == path || strings.HasPrefix(name, path+"/") {
+			return true
+		}
+	}
+	return false
+}
+func (r *Repository) scanSelected(old []storev2.TreeEntry, paths []string, trackedOnly bool) ([]workingFile, error) {
 	matcher := r.ignoreMatcher()
 	names := map[string]bool{}
 	var walk func(string) error
@@ -147,6 +157,16 @@ func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
 			if err != nil {
 				return err
 			}
+			name := filepath.ToSlash(relative)
+			reachable := selectedPath(name, paths)
+			if isDirectory && !reachable {
+				for _, path := range paths {
+					reachable = reachable || strings.HasPrefix(path, name+"/")
+				}
+			}
+			if !reachable {
+				continue
+			}
 			result, err := matcher.Check(filepath.ToSlash(relative), isDirectory)
 			if err != nil {
 				return err
@@ -154,7 +174,6 @@ func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
 			if result.Ignored {
 				continue
 			}
-			name := filepath.ToSlash(relative)
 			if err = validPath(name); err != nil {
 				return err
 			}
@@ -168,11 +187,16 @@ func (r *Repository) scan(old []storev2.TreeEntry) ([]workingFile, error) {
 		}
 		return nil
 	}
-	if err := walk(r.root); err != nil {
-		return nil, err
+	if !trackedOnly {
+		if err := walk(r.root); err != nil {
+			return nil, err
+		}
 	}
 	previous := map[string]storev2.TreeEntry{}
 	for _, e := range old {
+		if !selectedPath(e.Path, paths) {
+			continue
+		}
 		previous[e.Path] = e
 		p, err := r.safePath(e.Path)
 		if errors.Is(err, errPathBlocked) {
@@ -244,85 +268,37 @@ func (r *Repository) changes(old []storev2.TreeEntry, files []workingFile) ([]Ch
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
 	return changes, nil
 }
-func (r *Repository) Status() (_ []Change, err error) {
-	unlock, err := r.lock()
-	if err != nil {
-		return nil, err
-	}
-	defer func() { err = errors.Join(err, unlock()) }()
-	old, err := r.TreeEntries()
-	if err != nil {
-		return nil, err
-	}
-	files, err := r.scan(old)
-	if err != nil {
-		return nil, err
-	}
-	return r.changes(old, files)
-}
-func (r *Repository) Commit(message, author, email string) (_ storev2.ID, err error) {
-	if strings.TrimSpace(message) == "" || strings.TrimSpace(author) == "" || strings.TrimSpace(email) == "" {
-		return storev2.ID{}, fmt.Errorf("commit message and identity are required")
-	}
-	unlock, err := r.lock()
-	if err != nil {
-		return storev2.ID{}, err
-	}
-	defer func() { err = errors.Join(err, unlock()) }()
-	head, parent, err := r.current()
-	if err != nil {
-		return storev2.ID{}, err
-	}
-	old, err := r.tree(parent)
-	if err != nil {
-		return storev2.ID{}, err
-	}
-	files, err := r.scan(old)
-	if err != nil {
-		return storev2.ID{}, err
-	}
-	changes, err := r.changes(old, files)
-	if err != nil {
-		return storev2.ID{}, err
-	}
-	if len(changes) == 0 && parent != (storev2.ID{}) {
-		return storev2.ID{}, fmt.Errorf("nothing to commit; working tree clean")
-	}
+
+// ingestWorking is the only working-byte ingestion path for add/commit --all.
+// It never filters, decodes or normalizes bytes, including symbolic-link targets.
+func (r *Repository) ingestWorking(files []workingFile) ([]storev2.TreeEntry, error) {
 	ctx := context.Background()
-	for _, file := range files {
-		if !file.symlink {
-			continue
-		}
-		enabled, e := r.store.FilesystemEnabled()
-		if e != nil {
-			return storev2.ID{}, e
-		}
-		if !enabled {
-			return storev2.ID{}, fmt.Errorf("symbolic links require explicit pebble enable-filesystem")
-		}
-		break
-	}
 	entries := make([]storev2.TreeEntry, 0, len(files))
 	for _, file := range files {
 		var id storev2.ID
+		var err error
 		if file.symlink {
+			enabled, e := r.store.FilesystemEnabled()
+			if e != nil {
+				return nil, e
+			}
+			if !enabled {
+				return nil, fmt.Errorf("symbolic links require explicit pebble enable-filesystem")
+			}
 			p, e := r.safePath(file.name)
 			if e != nil {
-				return storev2.ID{}, e
+				return nil, e
 			}
 			link, e := readLink(p)
 			if e != nil {
-				return storev2.ID{}, e
+				return nil, e
 			}
 			info, e := os.Lstat(p)
 			if e != nil {
-				return storev2.ID{}, e
+				return nil, e
 			}
-			if !sameWorkingInfo(file.info, info) {
-				return storev2.ID{}, fmt.Errorf("link identity changed while committing: %s", file.name)
-			}
-			if measuresDirectoryLink && link.directory != file.directoryLink {
-				return storev2.ID{}, fmt.Errorf("link type changed while committing: %s", file.name)
+			if !sameWorkingInfo(file.info, info) || measuresDirectoryLink && link.directory != file.directoryLink {
+				return nil, fmt.Errorf("link identity changed while staging: %s", file.name)
 			}
 			id, err = r.store.IngestFile(ctx, strings.NewReader(link.target), nil)
 		} else {
@@ -331,63 +307,43 @@ func (r *Repository) Commit(message, author, email string) (_ storev2.ID, err er
 				if e != nil {
 					return e
 				}
-				if !sameWorkingInfo(file.info, info) {
-					return fmt.Errorf("file identity changed while committing: %s", file.name)
-				}
-				if measuresExecutable && (info.Mode()&0111 != 0) != file.executable {
-					return fmt.Errorf("mode changed while committing: %s", file.name)
+				if !sameWorkingInfo(file.info, info) || measuresExecutable && (info.Mode()&0111 != 0) != file.executable {
+					return fmt.Errorf("file identity changed while staging: %s", file.name)
 				}
 				id, e = r.store.IngestFile(ctx, f, nil)
 				return e
 			})
 		}
 		if err != nil {
-			return storev2.ID{}, err
+			return nil, err
 		}
-		size, sum, e := r.store.FileInfo(ctx, id)
-		if e != nil {
-			return storev2.ID{}, e
+		size, sum, err := r.store.FileInfo(ctx, id)
+		if err != nil {
+			return nil, err
 		}
 		if size != file.size || sum != file.sum {
-			return storev2.ID{}, fmt.Errorf("file changed while committing: %s", file.name)
+			return nil, fmt.Errorf("file changed while staging: %s", file.name)
 		}
 		entries = append(entries, storev2.TreeEntry{Path: file.name, Executable: file.executable, Symlink: file.symlink, DirectoryLink: file.directoryLink, Manifest: id})
 	}
-	tree, err := r.store.CreateTree(ctx, entries)
-	if err != nil {
-		return storev2.ID{}, err
-	}
-	now := time.Now()
-	c := storev2.CommitData{Tree: tree, Author: author, Email: email, Seconds: now.Unix(), Nanoseconds: uint32(now.Nanosecond()), Offset: now.Format("-0700"), Message: message}
-	var expected *storev2.ID
-	if parent != (storev2.ID{}) {
-		c.Parents = []storev2.ID{parent}
-		expected = &parent
-	}
-	id, err := r.store.CreateCommit(ctx, c)
-	if err != nil {
-		return storev2.ID{}, err
-	}
-	if err = r.boundary(ctx, "commit-publish", head); err != nil {
-		return storev2.ID{}, err
-	}
+	return entries, nil
+}
+
+func (r *Repository) verifyWorkingOwnership(files []workingFile) error {
 	for _, file := range files {
-		p, e := r.safePath(file.name)
-		if e != nil {
-			return storev2.ID{}, e
+		p, err := r.safePath(file.name)
+		if err != nil {
+			return err
 		}
-		info, e := os.Lstat(p)
-		if e != nil {
-			return storev2.ID{}, e
+		info, err := os.Lstat(p)
+		if err != nil {
+			return err
 		}
 		if !sameWorkingInfo(file.info, info) {
-			return storev2.ID{}, fmt.Errorf("file ownership changed before commit publication: %s", file.name)
+			return fmt.Errorf("file ownership changed before publication: %s", file.name)
 		}
 	}
-	if err = r.store.UpdateRef(ctx, head, expected, id); err != nil {
-		return storev2.ID{}, err
-	}
-	return id, nil
+	return nil
 }
 func (r *Repository) CreateBranch(name string) (err error) {
 	if !storev2.ValidBranch(name) {

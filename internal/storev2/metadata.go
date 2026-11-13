@@ -26,6 +26,9 @@ type CommitData struct {
 	Nanoseconds   uint32
 	Offset        string
 	Message       string
+	// PB12 extension; empty on historical commits that did not record a committer.
+	// Both identities share the native commit timestamp; no date is fabricated.
+	Committer, CommitterEmail string
 }
 
 func appendText(b []byte, s string) []byte {
@@ -84,7 +87,19 @@ func (s *Store) CreateCommit(ctx context.Context, c CommitData) (ID, error) {
 	if len(c.Parents) > 64 || len(c.Author) > 65535 || len(c.Email) > 65535 || len(c.Message) > 65535 || len(c.Offset) != 5 {
 		return ID{}, invalid("limit")
 	}
-	b := make([]byte, 0, 66+33*len(c.Parents)+len(c.Author)+len(c.Email)+len(c.Message))
+	if c.Committer != "" || c.CommitterEmail != "" {
+		if len(c.Committer) == 0 || len(c.CommitterEmail) == 0 || len(c.Committer) > 65535 || len(c.CommitterEmail) > 65535 {
+			return ID{}, invalid("identity")
+		}
+		if err := s.requireStaging(); err != nil {
+			return ID{}, err
+		}
+	}
+	size := 66 + 33*len(c.Parents) + len(c.Author) + len(c.Email) + len(c.Message)
+	if c.Committer != "" {
+		size += 9 + len(c.Committer) + len(c.CommitterEmail)
+	}
+	b := make([]byte, 0, size)
 	b = appendLink(b, c.Tree)
 	b = binary.BigEndian.AppendUint32(b, uint32(len(c.Parents)))
 	for _, parent := range c.Parents {
@@ -96,6 +111,11 @@ func (s *Store) CreateCommit(ctx context.Context, c CommitData) (ID, error) {
 	b = binary.BigEndian.AppendUint32(b, c.Nanoseconds)
 	b = append(b, c.Offset...)
 	b = appendText(b, c.Message)
+	if c.Committer != "" {
+		b = append(b, 1) // Versioned committer extension; legacy payloads unchanged.
+		b = appendText(b, c.Committer)
+		b = appendText(b, c.CommitterEmail)
+	}
 	return s.putPayload(ctx, Commit, b)
 }
 
@@ -139,6 +159,10 @@ func (s *Store) ReadCommit(ctx context.Context, id ID) (CommitData, error) {
 	c.Seconds, c.Nanoseconds = int64(d.u64()), d.u32()
 	c.Offset = string(d.take(5))
 	c.Message = string(d.text(true))
+	if len(d.b) != 0 {
+		d.require(d.u8() == 1, "committer version")
+		c.Committer, c.CommitterEmail = string(d.text(false)), string(d.text(false))
+	}
 	return c, d.err
 }
 

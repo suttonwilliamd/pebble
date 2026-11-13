@@ -15,6 +15,8 @@ import (
 // Existing object envelopes and IDs are unchanged. This repository-level gate
 // excludes binaries that only understand regular/executable tree entries.
 const filesystemMarker = "pebble-format 2\nrequires filesystem-v1\n"
+const stagingMarker = "pebble-format 2\nrequires staging-v1\n"
+const stagingFilesystemMarker = "pebble-format 2\nrequires filesystem-v1\nrequires staging-v1\n"
 
 func (s *Store) marker() (_ string, err error) {
 	f, err := regular(filepath.Join(s.meta, "format"))
@@ -22,7 +24,7 @@ func (s *Store) marker() (_ string, err error) {
 		return "", err
 	}
 	defer func() { err = errors.Join(err, f.Close()) }()
-	var data [len(filesystemMarker) + 1]byte
+	var data [len(stagingFilesystemMarker) + 1]byte
 	n, readErr := io.ReadFull(f, data[:])
 	if readErr != io.ErrUnexpectedEOF {
 		return "", errors.Join(ErrFormat, readErr)
@@ -33,6 +35,12 @@ func (s *Store) marker() (_ string, err error) {
 	if n == len(filesystemMarker) && bytes.Equal(data[:n], []byte(filesystemMarker)) {
 		return filesystemMarker, nil
 	}
+	if n == len(stagingMarker) && bytes.Equal(data[:n], []byte(stagingMarker)) {
+		return stagingMarker, nil
+	}
+	if n == len(stagingFilesystemMarker) && bytes.Equal(data[:n], []byte(stagingFilesystemMarker)) {
+		return stagingFilesystemMarker, nil
+	}
 	return "", ErrFormat
 }
 
@@ -42,7 +50,7 @@ func (s *Store) FilesystemEnabled() (bool, error) {
 		return false, err
 	}
 	marker, err := s.marker()
-	return marker == filesystemMarker, err
+	return marker == filesystemMarker || marker == stagingFilesystemMarker, err
 }
 func (s *Store) requireFilesystem() error {
 	enabled, err := s.FilesystemEnabled()
@@ -60,6 +68,15 @@ func (s *Store) requireFilesystem() error {
 // same persistent guard files and revalidate the marker under their writer lock.
 // Never replace/unlink guard files: doing so would split ownership across inodes.
 func (s *Store) EnableFilesystem(ctx context.Context) (err error) {
+	return s.enableCapability(ctx, false)
+}
+
+// EnableStaging excludes whole-tree-only writers before publishing index facts.
+func (s *Store) EnableStaging(ctx context.Context) error {
+	return s.enableCapability(ctx, true)
+}
+
+func (s *Store) enableCapability(ctx context.Context, staging bool) (err error) {
 	if err = ctx.Err(); err != nil {
 		return err
 	}
@@ -87,6 +104,17 @@ func (s *Store) EnableFilesystem(ctx context.Context) (err error) {
 		return err
 	}
 	defer release(&err, releaseWriter)
+	marker, err := s.marker()
+	if err != nil {
+		return err
+	}
+	hasStaging := marker == stagingMarker || marker == stagingFilesystemMarker
+	hasFilesystem := marker == filesystemMarker || marker == stagingFilesystemMarker
+	if staging && hasStaging {
+		// Reaffirm the marker barrier, without treating an explicit add as fsck
+		// of unrelated unreachable objects in an already-enabled repository.
+		return s.writeFile(ctx, filepath.Join(s.meta, "format"), []byte(marker))
+	}
 	ids, err := s.Inventory(ctx)
 	if err != nil {
 		return err
@@ -101,5 +129,30 @@ func (s *Store) EnableFilesystem(ctx context.Context) (err error) {
 	}
 	// Republish even an identical retry to establish the durability barrier after
 	// an uncertain earlier publication. No objects, refs, HEAD or bytes change.
-	return s.writeFile(ctx, filepath.Join(s.meta, "format"), []byte(filesystemMarker))
+	if staging && !hasStaging {
+		// Only an empty index may predate interrupted capability publication.
+		data, e := s.readIndexBytes()
+		if e != nil && !errors.Is(e, os.ErrNotExist) {
+			return e
+		}
+		if e == nil && !bytes.Equal(data, emptyIndex) {
+			return fmt.Errorf("unexpected index before staging enablement")
+		}
+		if err = s.writeFile(ctx, filepath.Join(s.meta, "index"), emptyIndex); err != nil {
+			return err
+		}
+	}
+	hasStaging = hasStaging || staging
+	hasFilesystem = hasFilesystem || !staging
+	target := formatMarker
+	if hasFilesystem {
+		target = filesystemMarker
+	}
+	if hasStaging {
+		target = stagingMarker
+		if hasFilesystem {
+			target = stagingFilesystemMarker
+		}
+	}
+	return s.writeFile(ctx, filepath.Join(s.meta, "format"), []byte(target))
 }

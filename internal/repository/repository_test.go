@@ -25,8 +25,53 @@ func write(t *testing.T, root, name string, b []byte) {
 }
 func committed(t *testing.T, r *Repository, message string) storev2.ID {
 	t.Helper()
-	id, err := r.Commit(message, "Fixture", "fixture@example.com")
+	if err := r.Stage([]string{"."}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := r.Commit(message, fixtureIdentity, false)
 	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+var fixtureIdentity = Identity{"Fixture", "fixture@example.com", "Fixture", "fixture@example.com"}
+
+// Seed old-format compatibility fixtures without running a new staging writer.
+// Actual old consumers and recovery operations remain independently executed.
+func frozenSnapshot(t *testing.T, r *Repository, message string) storev2.ID {
+	t.Helper()
+	head, parent, err := r.current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := r.tree(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := r.scan(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := r.ingestWorking(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := r.store.CreateTree(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := storev2.CommitData{Tree: tree, Author: "Fixture", Email: "fixture@example.com", Offset: "+0000", Message: message}
+	var expected *storev2.ID
+	if parent != (storev2.ID{}) {
+		c.Parents = []storev2.ID{parent}
+		expected = &parent
+	}
+	id, err := r.store.CreateCommit(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = r.store.UpdateRef(context.Background(), head, expected, id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -99,7 +144,7 @@ func TestTrackedIgnoreDeletionAndUntrackedAdoption(t *testing.T) {
 		t.Fatal(err)
 	}
 	changes, err := r.Status()
-	if err != nil || len(changes) != 1 || changes[0] != (Change{"D", "file.log"}) {
+	if err != nil || len(changes) != 1 || changes[0] != (Change{" D", "file.log"}) {
 		t.Fatalf("deletion: %v %v", changes, err)
 	}
 	if err = r.Checkout("old"); err == nil {

@@ -25,13 +25,14 @@ type edge struct {
 	length uint64
 }
 type node struct {
-	kind     Kind
-	size     uint64
-	total    uint64
-	checksum [32]byte
-	edges    []edge
-	tagName  string
-	symlinks bool
+	kind      Kind
+	size      uint64
+	total     uint64
+	checksum  [32]byte
+	edges     []edge
+	tagName   string
+	symlinks  bool
+	committer bool
 }
 
 // decoder records the first failure. Every read is bounded before indexing;
@@ -232,6 +233,12 @@ func parsePayload(kind Kind, payload []byte) (*node, error) {
 			n.edges = append(n.edges, edge{id: id})
 		}
 		d.identity()
+		if len(d.b) != 0 {
+			d.require(d.u8() == 1, "committer version")
+			d.require(len(d.text(false)) > 0, "identity")
+			d.require(len(d.text(false)) > 0, "identity")
+			n.committer = true
+		}
 	case Tag:
 		n.tagName = string(d.text(false))
 		d.require(validRef("tags/"+n.tagName), "ref")

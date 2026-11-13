@@ -29,11 +29,12 @@ func TestExecutableMixedHistory(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	root := t.TempDir()
+	env := append(isolatedIdentityEnv(t), "PEBBLE_AUTHOR=CLI Fixture", "PEBBLE_EMAIL=fixture@example.com")
 	invoke := func(ok bool, args ...string) string {
 		t.Helper()
 		c := exec.Command(bin, args...)
 		c.Dir = root
-		c.Env = append(os.Environ(), "PEBBLE_AUTHOR=CLI Fixture", "PEBBLE_EMAIL=fixture@example.com")
+		c.Env = env
 		out, err := c.CombinedOutput()
 		if (err == nil) != ok {
 			t.Fatalf("%v: %v\n%s", args, err, out)
@@ -65,6 +66,7 @@ func TestExecutableMixedHistory(t *testing.T) {
 		}
 	}
 	assertFiles(files)
+	invoke(true, "add", ".")
 	invoke(true, "commit", "initial")
 	invoke(true, "branch", "original")
 	for _, rev := range revisions[1:] {
@@ -75,6 +77,7 @@ func TestExecutableMixedHistory(t *testing.T) {
 			invoke(false, "commit", rev.Name)
 			continue
 		}
+		invoke(true, "add", ".")
 		invoke(true, "commit", rev.Name)
 		invoke(true, "branch", rev.Name)
 		if s := invoke(true, "status"); !strings.Contains(s, "Working tree clean") {
@@ -145,6 +148,7 @@ func TestExecutableMixedHistory(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(root, "newfile"), []byte("tracked target"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	invoke(true, "add", ".")
 	invoke(true, "commit", "new file")
 	invoke(true, "branch", "with-new")
 	invoke(true, "checkout", "original")
@@ -175,6 +179,7 @@ func TestExecutableMixedHistory(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(root, "precious"), preserved, 0644); err != nil {
 		t.Fatal(err)
 	}
+	invoke(true, "add", ".")
 	invoke(true, "commit", "preserved")
 	store, err = storev2.Open(root)
 	if err != nil {

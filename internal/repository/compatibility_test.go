@@ -112,7 +112,7 @@ func oldConsumerFixture(t *testing.T) *Repository {
 		t.Fatal(err)
 	}
 	write(t, r.root, "tracked", []byte("base bytes"))
-	committed(t, r, "base")
+	frozenSnapshot(t, r, "base")
 	if err = r.CreateBranch("before"); err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestFilesystemOldConsumers(t *testing.T) {
 	t.Run("new-recovery-preserves-real-old-intent", func(t *testing.T) {
 		r := oldConsumerFixture(t)
 		write(t, r.root, "tracked", []byte("after bytes"))
-		committed(t, r, "after")
+		frozenSnapshot(t, r, "after")
 		if err = r.CreateBranch("after"); err != nil {
 			t.Fatal(err)
 		}

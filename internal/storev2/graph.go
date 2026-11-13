@@ -100,6 +100,11 @@ func (g *graph) semantic(id ID, n *node) error {
 			return err
 		}
 	}
+	if n.committer {
+		if err := g.store.requireStaging(); err != nil {
+			return err
+		}
+	}
 	switch n.kind {
 	case Tree:
 		for _, entry := range n.edges {

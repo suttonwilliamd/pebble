@@ -177,5 +177,8 @@ func (r *Repository) Verify() (int, error) {
 	if _, err := r.store.VerifyRefs(ctx); err != nil {
 		return 0, err
 	}
+	if _, _, err := r.index(); err != nil {
+		return 0, err
+	}
 	return len(ids), nil
 }

@@ -41,6 +41,35 @@ standard-library compressed-asset encoders can change between Go releases.
 Determinism is checked within a toolchain, not by pinning incidental compressor
 output as a future format contract.
 
+## PB-12 staging and identity qualification
+
+`go test ./cmd/pebble -run '^TestStagingIdentityCLI$' -count=1 -v` builds and runs
+the actual CLI in disposable repositories. A real Git oracle compares selected
+commit paths and exact bytes, including staged A versus later B, additions,
+deletion/re-add, `--all`, ignored tracked modifications/deletions and untracked
+exclusion. Fresh-process checkout verifies raw binary SHA-256. Config tests use
+isolated HOME/config files and inspect stored author/committer provenance.
+Git isolation is child `Cmd.Env` only, never persistent worker exports.
+
+`TestIdentityConfigSerializedLimitCLI` runs actual local/global config commands
+at 65,535/65,536/65,537 serialized bytes, including JSON escaping and the final
+newline. Cumulative individually valid name fields and a single expanding value
+cannot publish an unreadable file. Failed updates preserve previous config bytes;
+subsequent CLI reads, updates and real commits still resolve recorded identities,
+including from a second repository sharing the isolated global config.
+
+`TestStagingInterruptedCommit` exits a real child at prepared/published boundaries;
+reopen retains or consumes the exact index without sweeping later bytes.
+`TestStagingFailsClosed`, `TestStagingIndexPublicationFailure`,
+`TestIndexPublicationEveryBoundary` and `TestCommitterExtensionIdentityAndCapability`
+cover locks, stale/missing/malformed records, failed restaging, physical publication
+barriers, provenance and forged capability downgrades.
+`TestStagingOldConsumers` compiles actual PB11 source at
+`4f6c9aa256ba90f1185a4225519d7733bd10ef57` in generated
+`pebble-pb12-old-*` fixtures; CI requires held/pre-lock rejection and active-writer
+exclusion. Prior PB09 and v2-recovery consumers/gates remain separate and intact.
+These are bounded correctness fixtures, not binary scalability or power-loss proof.
+
 ## Baseline inputs
 
 Measured 2026-11-11 at source base `b87aee308c5580b945754d65eac0b11872abfbb2`
