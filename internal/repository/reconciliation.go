@@ -289,7 +289,11 @@ func (r *Repository) canRestoreOriginal(plan *worktreeIntent, name string) (stri
 	for parent := filepath.ToSlash(filepath.Dir(name)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
 		found := false
 		for _, dir := range plan.Directories {
-			if dir.Path != parent || dir.Staged {
+			// Absence is not an original directory binding. In particular,
+			// do not lstat a nested absent parent below a later external
+			// leaf: POSIX reports ENOTDIR, not os.ErrNotExist. The original
+			// must remain in its archive, never be restored under that leaf.
+			if dir.Path != parent || dir.Staged || dir.Absent {
 				continue
 			}
 			id, e := filesystemIdentity(filepath.Join(r.root, filepath.FromSlash(parent)))

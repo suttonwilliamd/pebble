@@ -92,8 +92,8 @@ jobs:
         shell: bash
         run: |
           matrices='^TestCheckoutRecoveryEvery(Fault|Process)Boundary$'
-          go test -p 1 ./... -run "$matrices" -count=1 -timeout=12m
-          go test -p 1 ./... -skip "$matrices" -count=1 -timeout=12m
+          go test -p 1 ./... -run "$matrices" -count=1 -timeout=12m -v
+          go test -p 1 ./... -skip "$matrices" -count=1 -timeout=12m -v
       - name: Race detection
         if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
         run: go test -race ./...

@@ -573,11 +573,20 @@ func TestRevisionRestoreStagedParentDeletion(t *testing.T) {
 					if e != nil {
 						t.Fatal(e)
 					}
+					if len(receipts) != 1 || receipts[0].Operation != "restore" || receipts[0].RestoreSource == nil || *receipts[0].RestoreSource != source || receipts[0].BeforeID != head || receipts[0].RequestedID != head {
+						t.Fatalf("abort receipt lost source or history pins: %+v", receipts)
+					}
+					if _, e = os.Lstat(r.journalPath()); !os.IsNotExist(e) {
+						t.Fatalf("safe abort left an active journal: %v", e)
+					}
 					found := false
 					for _, receipt := range receipts {
 						for _, version := range receipt.Versions {
 							data, e := os.ReadFile(version.Location)
 							if e == nil && string(data) == "dirty tracked parent" {
+								if version.Changed {
+									t.Fatal("archived dirty parent was changed")
+								}
 								found = true
 							}
 						}
