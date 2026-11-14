@@ -41,6 +41,59 @@ standard-library compressed-asset encoders can change between Go releases.
 Determinism is checked within a toolchain, not by pinning incidental compressor
 output as a future format contract.
 
+## PB-13 revision inspection and restore qualification
+
+`go test -p 1 ./internal/repository ./cmd/pebble -run '^TestRevision' -count=1 -v`
+exercises deterministic generated fixtures, including an actual built CLI with
+fresh-process show/log/diff/restore at non-HEAD revisions. It asserts duplicate/
+reordered text and final-newline output, literal binary show bytes, exact raw
+checksums/sizes and prefix/middle/multiple/tail changed-region extents, current
+staged/unstaged sides, source deletions and file/directory transitions.
+HEAD/index/untouched/untracked bytes remain unchanged except explicit targets.
+A repetitive binary prefix insertion asserts the full positional summary, not
+aligned edit size or chunk churn. Live-diff regressions cover unchanged/edited
+preserved executable identity on Windows and directory-link hints on native-link
+hosts. Staged HEAD-child/index-parent overlaps cover source deletion, interrupted
+replay, later-file/directory safe abort with retained dirty preimages, and refusal
+to adopt an untracked blocking parent.
+Missing/unsafe paths and malformed/missing/wrong-kind/ambiguous refs fail closed.
+
+Engine regressions assert metadata byte/name equality across read-only inspection
+with a pending journal, ordered unique-parent graph traversal, cancellation and
+output failures, actual child-process exits at preparation/publication/native
+retain/install/HEAD boundaries, reopened exact-byte replay, and later-edit abort
+with discoverable dirty preimages and exact source receipts. Missing deletion
+parents remain absent; concurrent new children survive reconciliation. These
+are correctness proofs, not binary alignment, throughput or hardware power-loss
+qualification. Existing PB09/5c4/PB11 consumers and native platform/CI gates remain
+separate and unchanged. CLI fixtures isolate HOME/config/Git only in child Env.
+
+### Complete serial suite budget
+
+Go's `-timeout` applies to the entire package test process, not each test. On a
+native Windows qualification, the repository suite passed in 692.690s on Go
+1.21.13; on Go 1.27.3, preceding tests consumed about 691s and the 720s alarm
+interrupted `TestRestoreRecoveryEveryBoundary` only 29s into that test (the
+active child boundary was less than a second old). The same boundary passed
+three focused repetitions, and the complete restore matrix passed separately.
+This is aggregate package-budget exhaustion, not evidence of a restore deadlock.
+
+CI and local full qualification run these **serial complementary batches**:
+
+```sh
+matrices='^TestCheckoutRecoveryEvery(Fault|Process)Boundary$'
+go test -p 1 ./... -run "$matrices" -count=1 -timeout=12m
+go test -p 1 ./... -skip "$matrices" -count=1 -timeout=12m
+```
+
+The first batch runs both exhaustive checkout fault/process matrices; the second
+runs every other test, example and fuzz seed. The identical anchored expression
+makes these an exhaustive, disjoint partition, including newly added tests.
+No test or boundary is removed, no timeout increased, no publication barrier or
+fixture size changed, and no filesystem-heavy test processes overlap. Keep both
+exit codes and logs: the second batch alone is **not** a complete-suite gate.
+Native capability/old-consumer, Linux race/fuzz and Docker gates remain separate.
+
 ## PB-12 staging and identity qualification
 
 `go test ./cmd/pebble -run '^TestStagingIdentityCLI$' -count=1 -v` builds and runs

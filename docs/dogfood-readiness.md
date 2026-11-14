@@ -71,27 +71,38 @@ remain real and unchanged. No hard links, shared writable fixture files, reduced
 case lists or increased CI timeout are used. Complete package tests execute
 serially to avoid overlapping CLI/repository/store filesystem-heavy workloads.
 
-## Next implementation priorities
+## Implemented foundations and remaining priorities
+
+This inventory is capability evidence, not authorization for another milestone.
+The local storage/recovery foundations below are implemented; their remaining
+qualification and missing product workflows must not be confused with new work.
 
 1. **Recoverable checkout qualification.** PB-09 adds durable roll-forward intent
    and explicit `pebble recover`, with filesystem faults, process interruption,
    cancellation and external-edit preservation regressions. PB-10 adds guarded
    file/directory/link transitions; physical power-loss qualification is outstanding.
-2. **Wire ROCK into the snapshot format.** Versioned file manifests referencing
-   chunks, streaming reads/writes, hash/type domain separation and a migration plan.
-   Measure binary edits, insertion-heavy workloads, peak RSS and storage amplification.
-   Do not market binary efficiency before benchmarking the actual CLI path.
+2. **Qualify binary efficiency.** ROCK is already wired into format2 via typed
+   chunks and paged manifests, streaming reads/writes, hash/type domain separation
+   and explicit separate-destination v1 migration. Its historical `FastCDC` API
+   implements a polynomial rolling hash and byte-transition heuristic, not the
+   published Gear/two-mask algorithm. Synthetic insertion reuse varies with the
+   workload, including repetitive-input losses; it is not real-world performance
+   or storage savings. Representative actual-CLI binary edits, insertion-heavy
+   workloads, peak RSS and storage amplification remain unqualified. Do not market
+   binary efficiency before that qualification.
 3. **Local backup/restore and Git interoperability.** Portable verified bundle
    export/import, then Git import/export preserving authors, parents and modes.
    This is the shortest route to practical escape hatches and GitHub-backed use.
 4. **Complete sync graph and server.** Transfer all reachable commits/trees/blobs
    or manifests/chunks, validate before publication, fast-forward/CAS ref updates,
    protocol versioning, authentication, size limits and interrupted-transfer recovery.
-5. **Daily ergonomics.** Read-only text/binary diff, restore from arbitrary revisions,
-   safe branch deletion and signed release binaries. PB-12 adds selective staging,
-   staged/unstaged status and config/environment author/committer identity.
-6. **Merge and binary conflict UX.** Connect the existing combine library only
-   after preservation tests and explicit resolution/recovery semantics are in place.
+5. **Daily ergonomics.** PB-13 adds read-only revision-addressed text/binary diff,
+   show/log and arbitrary-source restore. Safe branch deletion and signed release
+   binaries remain planned. PB-12 supplies selective staging, staged/unstaged
+   status and config/environment author/committer identity.
+6. **Merge and binary conflict UX.** The existing combine prototype is not a
+   complete three-way merge workflow. Integration requires preservation tests and
+   explicit resolution/recovery semantics; no merge CLI is shipped.
 
 ## Known constraints
 

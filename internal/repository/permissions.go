@@ -29,6 +29,9 @@ func (r *Repository) preflightPermissions(stage string, plan *worktreeIntent) er
 		return fmt.Errorf("journal-parent durability/permission preflight: %w", err)
 	}
 	for i, dir := range plan.Directories {
+		if dir.Absent {
+			continue
+		}
 		path := filepath.Join(r.root, filepath.FromSlash(dir.Path))
 		if dir.Staged {
 			path = filepath.Join(stage, directoryName(i))

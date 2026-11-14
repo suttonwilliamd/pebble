@@ -57,6 +57,7 @@ type recoveryPlan struct {
 	Reason          string
 	Versions        []recoveryVersion
 	Restores        []recoveryRestore
+	RestoreSource   *storev2.ID `json:",omitempty"`
 }
 
 type recoveryLocation struct {
@@ -86,6 +87,7 @@ type RecoveryReceipt struct {
 	Reason        string
 	Restorations  []RecoveryRestoration
 	Versions      []RecoveryVersion
+	RestoreSource *storev2.ID
 }
 
 type RecoveryRestoration struct {
@@ -189,7 +191,7 @@ func (r *Repository) prepareRecovery(ctx context.Context, plan *worktreeIntent, 
 	if err := r.checkRecoveryHistory(plan); err != nil {
 		return nil, err
 	}
-	if plan.version != 3 {
+	if plan.version < 3 {
 		if err := r.upgradeRecoveryIntent(ctx, plan); err != nil {
 			return nil, err
 		}
@@ -207,6 +209,7 @@ func (r *Repository) prepareRecovery(ctx context.Context, plan *worktreeIntent, 
 		return nil, err
 	}
 	repair := &recoveryPlan{Transaction: plan.RecoveryID, RootIdentity: plan.RootIdentity, JournalIdentity: journal, IntentSHA256: digest, Operation: plan.Kind, BeforeHead: plan.BeforeHead, RequestedHead: plan.AfterHead, BeforeID: plan.BeforeID, RequestedID: plan.AfterID, Reason: reason.Error()}
+	repair.RestoreSource = plan.RestoreSource
 	if strings.HasPrefix(plan.RecoveryID, "worktree-stage-legacy-") {
 		legacy, err := r.legacyRecoveryIntent(plan)
 		if err != nil || !legacy {
@@ -252,6 +255,10 @@ func (r *Repository) checkRecoveryPlan(plan *worktreeIntent, repair *recoveryPla
 	}
 	if repair.Transaction != plan.RecoveryID || repair.RootIdentity != plan.RootIdentity || repair.JournalIdentity != id || repair.IntentSHA256 != digest || repair.Operation != plan.Kind || repair.BeforeHead != plan.BeforeHead || repair.RequestedHead != plan.AfterHead || repair.BeforeID != plan.BeforeID || repair.RequestedID != plan.AfterID {
 		return fmt.Errorf("reconciliation belongs to another intent or directory")
+	}
+	if (repair.RestoreSource == nil) != (plan.RestoreSource == nil) ||
+		repair.RestoreSource != nil && *repair.RestoreSource != *plan.RestoreSource {
+		return fmt.Errorf("reconciliation belongs to another restore source")
 	}
 	private := &Repository{root: r.journalPath()}
 	if err := validateRecoveryRestores(plan, repair); err != nil {
@@ -615,6 +622,7 @@ func (r *Repository) RecoveryReceipts() ([]RecoveryReceipt, error) {
 			return nil, errors.Join(fmt.Errorf("published receipt does not match its archived repair plan"), err)
 		}
 		receipt := RecoveryReceipt{Operation: location.Plan.Operation, Directory: bundle, BeforeHead: location.Plan.BeforeHead, RequestedHead: location.Plan.RequestedHead, BeforeID: location.Plan.BeforeID, RequestedID: location.Plan.RequestedID, Reason: location.Plan.Reason}
+		receipt.RestoreSource = location.Plan.RestoreSource
 		for _, version := range location.Plan.Versions {
 			if !recoverySlot(version.Slot) || (version.Image == nil) == (version.Directory == "") {
 				return nil, fmt.Errorf("invalid published preserved-version ownership")

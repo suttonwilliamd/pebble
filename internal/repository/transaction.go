@@ -41,19 +41,22 @@ type journalDirectory struct {
 	Identity string
 	Staged   bool
 	Remove   bool
+	Absent   bool `json:",omitempty"`
 }
 type worktreeIntent struct {
-	RecoveryID   string `json:",omitempty"`
-	version      int
-	RootIdentity string
-	Kind         string
-	RestorePath  string
-	BeforeHead   string
-	AfterHead    string
-	BeforeID     storev2.ID
-	AfterID      storev2.ID
-	Files        []journalFile
-	Directories  []journalDirectory
+	RecoveryID    string `json:",omitempty"`
+	version       int
+	RootIdentity  string
+	Kind          string
+	RestorePath   string
+	BeforeHead    string
+	AfterHead     string
+	BeforeID      storev2.ID
+	AfterID       storev2.ID
+	Files         []journalFile
+	Directories   []journalDirectory
+	RestoreSource *storev2.ID `json:",omitempty"`
+	RestoreIndex  *storev2.ID `json:",omitempty"`
 }
 type journalEnvelope struct {
 	Version int
@@ -127,7 +130,7 @@ func strictJSON(data []byte, value any) error {
 	return nil
 }
 func writeIntent(dir string, plan *worktreeIntent) error {
-	envelope, err := encodeWorktreeRecord(plan, 3)
+	envelope, err := encodeWorktreeRecord(plan, plan.version)
 	if err != nil {
 		return err
 	}
@@ -160,7 +163,7 @@ func (r *Repository) readIntent() (*worktreeIntent, error) {
 		return nil, err
 	}
 	sum := sha256.Sum256(envelope.Intent)
-	if envelope.Version < 1 || envelope.Version > 3 || envelope.SHA256 != hex.EncodeToString(sum[:]) {
+	if envelope.Version < 1 || envelope.Version > 4 || envelope.SHA256 != hex.EncodeToString(sum[:]) {
 		return nil, fmt.Errorf("unsupported or corrupt worktree journal")
 	}
 	var plan worktreeIntent
@@ -195,12 +198,16 @@ func (r *Repository) validateIntent(plan *worktreeIntent) error {
 	if root != plan.RootIdentity {
 		return fmt.Errorf("journal belongs to another working tree")
 	}
-	if plan.version == 3 {
+	if plan.version >= 3 {
 		if !strings.HasPrefix(plan.RecoveryID, "worktree-stage-") || strings.ContainsAny(plan.RecoveryID, `/\`) {
 			return fmt.Errorf("invalid recovery transaction identity")
 		}
 	} else if plan.RecoveryID != "" {
 		return fmt.Errorf("legacy journal contains new recovery semantics")
+	}
+	if plan.version < 4 && (plan.RestoreSource != nil || plan.RestoreIndex != nil) ||
+		plan.version == 4 && (plan.Kind != "restore" || plan.RestoreSource == nil) {
+		return fmt.Errorf("unsupported restore source semantics")
 	}
 	if plan.Kind != "checkout" && plan.Kind != "restore" {
 		return fmt.Errorf("unsupported journal operation")
@@ -222,16 +229,23 @@ func (r *Repository) validateIntent(plan *worktreeIntent) error {
 		if plan.BeforeHead != plan.AfterHead || plan.BeforeID != plan.AfterID {
 			return fmt.Errorf("restore journal changes history")
 		}
-		selected := []storev2.TreeEntry{}
-		for _, e := range after {
-			if e.Path == plan.RestorePath {
-				selected = append(selected, e)
+		if plan.version == 4 {
+			before, after, err = r.restoreSelection(plan)
+			if err != nil {
+				return err
 			}
+		} else {
+			selected := []storev2.TreeEntry{}
+			for _, e := range after {
+				if e.Path == plan.RestorePath {
+					selected = append(selected, e)
+				}
+			}
+			if len(selected) != 1 {
+				return fmt.Errorf("invalid restore journal path")
+			}
+			before, after = nil, selected
 		}
-		if len(selected) != 1 {
-			return fmt.Errorf("invalid restore journal path")
-		}
-		before, after = nil, selected
 	} else if plan.RestorePath != "" {
 		return fmt.Errorf("unexpected restore path")
 	}
@@ -266,14 +280,14 @@ func (r *Repository) validateIntent(plan *worktreeIntent) error {
 				return fmt.Errorf("empty journal identity")
 			}
 		}
-		if plan.version == 3 && !file.Keep && file.Original != nil && !sameImageContent(file.Backup, file.Original) || (file.Original == nil || file.Keep) && file.Backup != nil {
+		if plan.version >= 3 && !file.Keep && file.Original != nil && !sameImageContent(file.Backup, file.Original) || (file.Original == nil || file.Keep) && file.Backup != nil {
 			return fmt.Errorf("missing or inconsistent journal preimage: %s", file.Path)
 		}
-		if entry, ok := old[file.Path]; ok {
+		if entry, ok := old[file.Path]; ok && plan.Kind == "checkout" {
 			if err = imageMatchesEntry(r.store, file.Original, entry); err != nil {
 				return err
 			}
-		} else if plan.Kind == "checkout" && file.Original != nil && !file.Keep {
+		} else if (plan.Kind == "checkout" || plan.version == 4) && !ok && file.Original != nil && !file.Keep {
 			return fmt.Errorf("journal overwrites untracked path")
 		}
 		if entry, ok := target[file.Path]; ok {
@@ -299,7 +313,10 @@ func (r *Repository) validateIntent(plan *worktreeIntent) error {
 		if err = validPath(dir.Path); err != nil {
 			return err
 		}
-		if seen[dir.Path] || dir.Identity == "" || dir.Staged && dir.Remove || dir.Remove && !removable || !parents[dir.Path] && !dir.Remove {
+		if dir.Absent && (plan.version != 4 || dir.Identity != "" || dir.Staged || dir.Remove) {
+			return fmt.Errorf("invalid absent restore directory")
+		}
+		if seen[dir.Path] || dir.Identity == "" && !dir.Absent || dir.Staged && dir.Remove || dir.Remove && !removable || !parents[dir.Path] && !dir.Remove {
 			return fmt.Errorf("invalid journal directory")
 		}
 		parent := filepath.ToSlash(filepath.Dir(dir.Path))
@@ -370,6 +387,11 @@ func (r *Repository) inspectJournalFile(stage string, i int, file journalFile, p
 	return nil
 }
 func (r *Repository) inspectHistory(plan *worktreeIntent) error {
+	if plan.RestoreSource != nil {
+		if err := r.store.Verify(context.Background(), *plan.RestoreSource); err != nil {
+			return err
+		}
+	}
 	head, err := r.GetHead()
 	if err != nil {
 		return err

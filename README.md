@@ -14,7 +14,8 @@ and independent backups while dogfooding.
 - Branch creation/listing (including `feature/name`) and file-restoring checkout.
 - Checkout refuses dirty tracked files, untracked/ignored file collisions, unsafe
   paths and corrupt target objects before changing files.
-- Explicit single-file recovery from HEAD with `pebble restore <file>`.
+- Revision-addressed `diff`, `show`, `log`, and explicit worktree-only restore
+  from HEAD or an arbitrary commit, without moving branches or restaging.
 - Durable checkout/restore journals and explicit `pebble recover`, including
   automatic no-clobber abort/reconciliation with discoverable preserved versions.
 - Literal symbolic-link targets/types, observable executable identity, and
@@ -25,6 +26,9 @@ and independent backups while dogfooding.
   and atomic individual metadata/object writes.
 - Format2 CLI commits stream text and binaries through ROCK chunking and immutable
   paged manifests; checkout/restore verify staged raw bytes before replacement.
+  ROCK's historical `FastCDC` API name denotes Pebble's polynomial rolling hash
+  and byte-transition heuristic, not the published Gear/two-mask FastCDC algorithm.
+  Chunk reuse is workload-dependent; synthetic reuse is not real-world efficiency.
 - Store API packs provide checksummed compressed physical storage and rebuildable
   indexes without changing typed IDs, file revisions, or refs.
 - Explicit read-only v1 migration into a fresh separate v2 destination, with
@@ -39,7 +43,8 @@ and independent backups while dogfooding.
   incremental/resumable sync. `pull`/merge remain unavailable; use `fetch` and
   explicit checkout. Pebble cannot push to GitHub's Git endpoints.
   The old `internal/remote` prototype is not mounted or used by the new server.
-- Merge/combine CLI, Git import/export, clone, diff, branch deletion.
+- Merge/combine CLI, Git import/export, clone, branch deletion. The combine
+  prototype is not a complete three-way merge workflow.
 - Format2 remote sync and GC. Streaming storage does not yet establish
   large-binary scalability or improvements over Git.
 - Special files and empty directories as standalone snapshot entries.
@@ -55,7 +60,7 @@ The [PB-01 v2 format/protocol contract](docs/contracts/v2.md) and its
 [canonical byte fixtures](internal/formatcontract/testdata/v2.json) freeze the
 current engine's representation. The [format2 store and CLI](docs/store-v2.md)
 implement typed durable object/ref publication, immutable paged file construction,
-bounded-memory content-defined ingestion and the seven local repository flows.
+bounded-memory content-defined ingestion and the local repository flows.
 The `/v1/` service remains legacy-only; there is no automatic migration or fallback.
 
 ## Install
@@ -135,6 +140,64 @@ To undo edits or recover a deleted tracked file, run `pebble restore path/to/fil
 **This explicitly discards that file's uncommitted contents.** It restores HEAD
 without changing history and restores the stored regular-file or link type.
 It does not authorize discarding a nonempty directory or later external edits.
+
+### Revision inspection and arbitrary restore
+
+Revision arguments accept `HEAD`, full canonical `pv2:commit:sha256:<64 lowercase
+hex>` IDs, exact `heads/<branch>` / `tags/<name>` refs, and unambiguous short
+branch/tag names. Refs must target commits: annotated-tag peeling and arbitrary
+object inspection are not implied. `~n` follows the first parent n times; `^n`
+selects the nth ordered parent (both default to 1; zero selects the same commit).
+Missing, malformed, wrong-kind and ambiguous revisions fail, never become paths.
+Abbreviated hashes, revision ranges and reflogs are not supported.
+
+```sh
+pebble log HEAD~2                   # all ordered ancestors from this commit
+pebble show heads/main              # metadata and first-parent patch
+pebble show HEAD~1 -- assets/a.bin   # literal raw bytes only; redirect to a file
+pebble diff                        # index versus tracked worktree
+pebble diff --staged                # HEAD versus index
+pebble diff --staged HEAD~1         # selected revision versus index
+pebble diff HEAD~1                  # revision versus tracked worktree
+pebble diff HEAD~2 HEAD -- src      # two revisions; literal subtree selector
+pebble restore --source HEAD~1 -- assets/a.bin
+```
+
+Paths follow `--` for inspection and resolve relative to the invoking directory.
+`show ... -- file` requires one exact leaf; links show their literal target bytes.
+Without a file, `show` compares a commit to its first parent (or an empty tree).
+`log` visits all ordered parents, first-parent first, displaying each commit once.
+Diff excludes unrelated untracked files, including ignored new files. One-revision
+worktree diffs include paths tracked in either that revision or the current index.
+Inspection never writes repository metadata, stages content or resumes recovery;
+history inspection remains available during dirty/pending-recovery states.
+Live inspection fails rather than following unsafe links or accepting detected
+concurrent changes; a pending transition can make live inspection unavailable.
+
+Text means valid UTF-8 without NUL. Diffs emit deterministic **whole-file
+replacement hunks**, not minimal/context patches: removed lines then added lines,
+in original order, retaining duplicates, CRLF bytes and final-newline distinctions.
+Binary summaries show presence, exact byte lengths and raw whole-file SHA-256
+(not object IDs). Regions are maximal unequal runs at identical **zero-based byte
+offsets**, followed by an unmatched old/new tail, with separate offsets and lengths.
+They are not an alignment/edit script: an insertion can mark shifted suffix bytes
+as unequal. No decoding, disassembly or binary transformation occurs. Inspection
+uses bounded buffers and at most two verified file spools outside the repository;
+temporary disk space proportional to those two files is required.
+
+`restore --source <revision> [--] <path>` selects a literal leaf/subtree (`.` for
+all). It explicitly discards selected HEAD/index-tracked working edits, installs
+source revisions and removes selected tracked leaves absent from the source.
+Absent paths in source, HEAD and index are errors, not recursive deletion requests.
+It never moves HEAD/branch tips or changes the staging index. Consequently a
+restored source-only file is still untracked; a later restore cannot silently
+delete it. Source-only collisions must be identical or are refused. Untracked
+children, filesystem aliases/unsafe links, unsupported types/modes and later
+external edits retain the existing no-clobber rules. Already missing deletion
+parents remain absent; later entries there trigger safe abort. Durable source
+and staging-tree pins allow interrupted replay without re-resolving a moving ref.
+The original `restore <file>` keeps its single-HEAD-leaf discard semantics.
+
 
 Default commits contain **exactly staged revisions**, not later working edits.
 `add` captures file bytes/type/executable identity in immutable objects and stages

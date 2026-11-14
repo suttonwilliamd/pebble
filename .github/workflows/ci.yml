@@ -85,8 +85,15 @@ jobs:
           fi
           PEBBLE_TEST_RECOVERY_OLD_SOURCE="$old" PEBBLE_REQUIRE_RECOVERY_OLD_CONSUMER=1 \
             go test ./internal/repository ./cmd/pebble -run '^(TestAutomaticRecovery.*|TestFilesystemAutomaticRecovery.*|TestFilesystemNativeRenameAmbiguity)$' -count=1 -timeout=12m -v
-      - name: Test
-        run: go test -p 1 ./... -count=1 -timeout=12m
+      # Go's timeout is per package process, not per test. Keep every test
+      # and the 12m limit, but budget the exhaustive checkout matrices apart
+      # from the remaining repository suite (no concurrent filesystem load).
+      - name: Test (serial exhaustive checkout matrices, then complement)
+        shell: bash
+        run: |
+          matrices='^TestCheckoutRecoveryEvery(Fault|Process)Boundary$'
+          go test -p 1 ./... -run "$matrices" -count=1 -timeout=12m
+          go test -p 1 ./... -skip "$matrices" -count=1 -timeout=12m
       - name: Race detection
         if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
         run: go test -race ./...
