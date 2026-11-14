@@ -8,10 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/suttonwilliamd/pebble/internal/repository"
-	"github.com/suttonwilliamd/pebble/internal/storev2"
 
 	"github.com/suttonwilliamd/pebble/internal/snapshot"
 	"github.com/suttonwilliamd/pebble/internal/syncproto"
@@ -41,11 +39,13 @@ Usage:
   pebble commit [--all] [-m] <message> Commit staged revisions only
   pebble status [--staged|--unstaged] Show HEAD/index and index/worktree changes
   pebble config [--global] <key> [value] Read/write Pebble identity configuration
-  pebble log                      Show complete current-branch history
+  pebble log [revision]           Show complete ordered-parent history
+  pebble show [revision] [-- file] Show a commit patch or literal file bytes
+  pebble diff [--staged] [rev [rev]] [-- path...] Inspect revision/index/worktree
   pebble check-ignore [-v] <path>... Explain ignore rules (tracked paths stay tracked)
   pebble branch [name]            List branches or create one at HEAD
   pebble checkout <branch>        Restore a branch (refuses tracked changes)
-  pebble restore <file>           Discard edits to one file, restoring HEAD
+  pebble restore [--source rev] [--] <path> Discard selected working edits only
   pebble recover                  Resume an interrupted checkout or restore
   pebble enable-filesystem        Explicitly enable literal-link tree entries
   pebble push <url> [branch]       Push HEAD to a remote branch (default: current)
@@ -81,7 +81,7 @@ func run(args []string, cwd string, w io.Writer) error {
 		return errors.New("pull/merge is not implemented: use pebble fetch <url> [branch], inspect history, then checkout incoming/<branch>; keep Git and backups")
 	}
 	switch cmd {
-	case "init", "add", "config", "status", "check-ignore", "log", "branch", "checkout", "commit", "restore", "recover", "enable-filesystem", "push", "fetch", "fsck":
+	case "init", "add", "config", "status", "check-ignore", "log", "show", "diff", "branch", "checkout", "commit", "restore", "recover", "enable-filesystem", "push", "fetch", "fsck":
 	default:
 		return fmt.Errorf("unknown command %q; run pebble help", cmd)
 	}
@@ -256,29 +256,11 @@ func run(args []string, cwd string, w io.Writer) error {
 			fmt.Fprintf(w, "%s %s\n", c.Code, c.Path)
 		}
 	case "log":
-		if len(params) != 0 {
-			return errors.New("usage: pebble log")
-		}
-		id, err := repo.CurrentID()
-		if err != nil {
-			return err
-		}
-		if id == (storev2.ID{}) {
-			fmt.Fprintln(w, "No commits yet")
-		}
-		return repo.Log(func(id storev2.ID, c storev2.CommitData) error {
-			zone, err := time.Parse("-0700", c.Offset)
-			if err != nil {
-				return err
-			}
-			_, offset := zone.Zone()
-			stamp := time.Unix(c.Seconds, int64(c.Nanoseconds)).In(time.FixedZone(c.Offset, offset))
-			_, err = fmt.Fprintf(w, "commit %s\nAuthor: %s <%s>\nDate:   %s %s\n\n    %s\n\n", id, c.Author, c.Email, stamp.Format("Mon Jan 2 15:04:05.999999999 2006"), c.Offset, c.Message)
-			if err == nil && c.Committer != "" {
-				_, err = fmt.Fprintf(w, "Committer: %s <%s>\n\n", c.Committer, c.CommitterEmail)
-			}
-			return err
-		})
+		return handleLog(params, repo, w)
+	case "show":
+		return handleShow(params, cwd, repo, w)
+	case "diff":
+		return handleDiff(params, cwd, repo, w)
 	case "branch":
 		if len(params) > 1 {
 			return errors.New("usage: pebble branch [name]")
@@ -314,21 +296,7 @@ func run(args []string, cwd string, w io.Writer) error {
 		}
 		fmt.Fprintln(w, "Switched to branch:", params[0])
 	case "restore":
-		if len(params) != 1 {
-			return errors.New("usage: pebble restore <file> (discards this file's uncommitted edits)")
-		}
-		p := params[0]
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(cwd, p)
-		}
-		rel, err := filepath.Rel(repo.RootPath(), p)
-		if err != nil {
-			return err
-		}
-		if err = repo.Restore(filepath.ToSlash(rel)); err != nil {
-			return err
-		}
-		fmt.Fprintln(w, "Restored from HEAD:", filepath.ToSlash(rel))
+		return handleRestore(params, cwd, repo, w)
 	case "recover":
 		if len(params) != 0 {
 			return errors.New("usage: pebble recover")
@@ -345,6 +313,9 @@ func run(args []string, cwd string, w io.Writer) error {
 		for _, receipt := range receipts {
 			fmt.Fprintf(w, "Aborted %s; requested operation was NOT completed; preserved versions: %s\n", receipt.Operation, receipt.Directory)
 			fmt.Fprintf(w, "Prior HEAD: %s (%s); requested HEAD: %s (%s)\n", receipt.BeforeHead, receipt.BeforeID, receipt.RequestedHead, receipt.RequestedID)
+			if receipt.RestoreSource != nil {
+				fmt.Fprintln(w, "Restore source:", *receipt.RestoreSource)
+			}
 			fmt.Fprintln(w, "Reason:", receipt.Reason)
 			for _, restored := range receipt.Restorations {
 				action := "Automatic alternate placement"

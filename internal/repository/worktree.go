@@ -381,28 +381,5 @@ func (r *Repository) Log(visit func(storev2.ID, storev2.CommitData) error) error
 	if id == (storev2.ID{}) {
 		return nil
 	}
-	pending := []storev2.ID{id}
-	seen := map[storev2.ID]bool{}
-	for len(pending) > 0 {
-		id = pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if seen[id] {
-			continue
-		}
-		if len(seen) >= storev2.MaxGraphObjects {
-			return storev2.ErrGraphLimit
-		}
-		seen[id] = true
-		c, err := r.GetCommit(id)
-		if err != nil {
-			return err
-		}
-		if err = visit(id, c); err != nil {
-			return err
-		}
-		for i := len(c.Parents) - 1; i >= 0; i-- {
-			pending = append(pending, c.Parents[i])
-		}
-	}
-	return nil
+	return r.logFrom(context.Background(), id, visit)
 }

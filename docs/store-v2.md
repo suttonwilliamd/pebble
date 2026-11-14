@@ -3,11 +3,53 @@
 `internal/storev2` implements the [frozen format-2 object contract](contracts/v2.md):
 typed durable object/ref publication, immutable paged files, bounded streaming
 ingestion and compressed checksummed physical packs with rebuildable indexes.
-`internal/repository` now powers CLI `commit`, `status`, `log`, `branch`,
-`checkout`, `restore`, `recover` and `fsck`. Text/PNG/JPEG/gzip/ZIP and arbitrary bytes use the
-same `IngestFile`/`CopyFile` path, without filename or binary classification.
+`internal/repository` powers the local CLI, including `add`, `commit`, `status`,
+`diff`, `show`, `log`, `branch`, `checkout`, `restore`, `recover` and `fsck`.
+Text/PNG/JPEG/gzip/ZIP and arbitrary bytes share `IngestFile`/`CopyFile`.
 The `/v1/` service remains legacy-only. There is no implicit migration, format2
 sync, merge command, GC or Git importer.
+
+## PB-13: revision inspection and arbitrary-source restore
+
+One repository resolver accepts full typed commit IDs, HEAD, exact or unambiguous
+commit-valued refs and ordered-parent suffixes. See the
+[CLI semantics](../README.md#revision-inspection-and-arbitrary-restore). There is
+no physical object-path inference, abbreviated-hash lookup or tag peeling.
+Diff/show/log are read-only, including while recovery is pending. Live diffs use
+the existing no-follow identity-checked reads; repository/index state is never
+repaired or ingested as an inspection side effect. Live observations compare
+native metadata only where observable; preserved executable/directory-link hints
+remain historical identity, not fictitious native measurements.
+
+Text patches use linear whole-file replacement hunks, preserving original line
+order, duplicates, literal CRLF and missing final newline. Valid UTF-8 without
+NUL is text. Binary summaries compute actual raw SHA-256/lengths and maximal
+unequal runs at identical zero-based offsets plus unmatched tails. These ranges
+describe offset comparison, not an aligned delta or storage-chunk boundaries.
+Two private OS-temp spools bound memory independently of file size/line length;
+temporary disk, not repository objects, holds verified inspection bytes.
+
+Source-aware restore uses the existing planner, preimages, no-follow namespace
+moves and automatic reconciliation. Its **local v4 intent** adds optional
+`RestoreSource` (exact commit link) and `RestoreIndex` (exact staged-tree link);
+HEAD before/after pins remain identical. The selected HEAD/index/source leaf
+union defines the plan; absent source leaves are explicit selected deletions.
+Tracked dirty preimages are retained; source-only untracked collisions must
+match exactly or fail. An `Absent` directory record pins directory absence,
+including a selected index-tracked leaf blocking a HEAD-tracked child. Such a
+blocker is separately checked against its exact journal image, not adopted as
+untracked data. This permits source deletion across staged directory-to-file
+transitions while preserving HEAD/index. Already-missing deletion ancestors
+remain absent rather than being installed. Later entries there invalidate replay
+rather than being overwritten. Abort receipts include the exact source.
+
+Legacy HEAD-only restore and checkout continue writing v3. New readers retain
+v1/v2/v3 replay, including old dirty-preimage limitations. Old readers reject v4
+rather than guessing its semantics. Optional fields omit absent values, preserving
+old intent/repair digests and physical evidence. No object/ID/index/capability
+encoding, history, branch tips or staging facts are rewritten by this feature.
+Recovery continues to check history/root/source pins and native move barriers;
+neither successful restore nor safe abort silently restages selected paths.
 
 ## PB-12: immutable selective staging and identity
 
@@ -44,9 +86,10 @@ or ID fails closed without deleting index/history.
 
 Checkout conservatively refuses staged changes and neutralizes a clean index
 before publishing the existing worktree journal. Restore keeps the index and
-changes only the explicitly requested HEAD working revision; recovery therefore
-does not need a second index replay protocol. No operation overwrites staged A
-with later working B implicitly. Power-loss, noncooperating metadata writers and
+changes only explicitly selected working revisions (HEAD by default, or the pinned
+source for v4 intents); recovery does not need a second index replay protocol.
+No operation overwrites staged A with later working B implicitly. Power-loss,
+noncooperating metadata writers and
 concurrent editors remain outside the existing guarantees.
 
 New commit metadata records explicit author and committer identities using the

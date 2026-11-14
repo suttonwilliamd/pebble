@@ -57,6 +57,9 @@ func settleWorktree(ctx context.Context, r *Repository, stage string, plan *work
 		}
 	}
 	for i, dir := range plan.Directories {
+		if dir.Absent {
+			continue
+		}
 		path := filepath.Join(r.root, filepath.FromSlash(dir.Path))
 		if dir.Remove {
 			path = filepath.Join(stage, retainedDirectoryName(i))

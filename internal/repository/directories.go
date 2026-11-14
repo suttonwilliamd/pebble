@@ -156,6 +156,13 @@ func (r *Repository) prepareDirectories(stage string, plan *worktreeIntent, targ
 			}
 			staged = true
 		}
+		// A HEAD child may overlap an index-tracked parent leaf. If no
+		// target needs this directory, pin directory absence rather than
+		// staging a directory that would obstruct the selected deletion.
+		if plan.version == 4 && staged && !needed[name] && (info == nil || plannedFile(plan, name)) {
+			plan.Directories = append(plan.Directories, journalDirectory{Path: name, Absent: true})
+			continue
+		}
 		if staged {
 			if !needed[name] {
 				return fmt.Errorf("missing source directory: %s", name)
@@ -172,6 +179,34 @@ func (r *Repository) prepareDirectories(stage string, plan *worktreeIntent, targ
 		plan.Directories = append(plan.Directories, journalDirectory{Path: name, Identity: identity, Staged: staged, Remove: remove[name]})
 	}
 	return nil
+}
+
+// An absent directory may be occupied/blocked only by a planned leaf. The
+// complete transaction inspection separately verifies that leaf's exact image;
+// this is not permission to adopt a new untracked blocker or directory.
+func (r *Repository) inspectAbsentDirectory(plan *worktreeIntent, name string) error {
+	p, err := r.safePath(name)
+	if errors.Is(err, errPathBlocked) {
+		for parent := filepath.ToSlash(filepath.Dir(name)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
+			if plannedFile(plan, parent) {
+				return nil
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(p)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if plannedFile(plan, name) && !info.IsDir() {
+		return nil
+	}
+	return fmt.Errorf("absent restore directory changed: %s", name)
 }
 
 func (r *Repository) directoryAt(name string) (string, error) {
@@ -203,6 +238,12 @@ func (r *Repository) inspectDirectories(stage string, plan *worktreeIntent) erro
 		return fmt.Errorf("working root replaced")
 	}
 	for i, dir := range plan.Directories {
+		if dir.Absent {
+			if err := r.inspectAbsentDirectory(plan, dir.Path); err != nil {
+				return err
+			}
+			continue
+		}
 		live, err := r.directoryAt(dir.Path)
 		if err != nil {
 			return err

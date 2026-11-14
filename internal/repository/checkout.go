@@ -174,7 +174,7 @@ func (r *Repository) CheckoutContext(ctx context.Context, name string) (err erro
 	return r.prepareWorktree(ctx, "checkout", "", head, ref, oldID, id, old, target)
 }
 
-func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead, afterHead string, beforeID, afterID storev2.ID, old, target []storev2.TreeEntry) (err error) {
+func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead, afterHead string, beforeID, afterID storev2.ID, old, target []storev2.TreeEntry, selection ...restoreSelection) (err error) {
 	for _, entry := range target {
 		if entry.Executable && !measuresExecutable {
 			return fmt.Errorf("host cannot materialize executable identity: %s; history preserved", entry.Path)
@@ -190,6 +190,11 @@ func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead
 		return err
 	}
 	plan := worktreeIntent{Kind: kind, RestorePath: name, BeforeHead: beforeHead, AfterHead: afterHead, BeforeID: beforeID, AfterID: afterID, RecoveryID: filepath.Base(dir), version: 3}
+	if len(selection) != 0 {
+		plan.version = 4
+		plan.RestoreSource = &selection[0].Source
+		plan.RestoreIndex = selection[0].Index
+	}
 	before, after := map[string]storev2.TreeEntry{}, map[string]storev2.TreeEntry{}
 	names := map[string]bool{}
 	for _, e := range old {
@@ -221,7 +226,7 @@ func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead
 			return err
 		}
 		file := journalFile{Path: path, Original: original}
-		if entry, tracked := before[path]; tracked {
+		if entry, tracked := before[path]; tracked && kind == "checkout" {
 			ok, err := r.matches(entry)
 			if err != nil {
 				return err
@@ -231,7 +236,8 @@ func (r *Repository) prepareWorktree(ctx context.Context, kind, name, beforeHead
 			}
 		}
 		if entry, exists := after[path]; exists {
-			if original != nil && kind == "checkout" {
+			_, tracked := before[path]
+			if original != nil && (kind == "checkout" || plan.version == 4 && !tracked) {
 				ok, err := r.matches(entry)
 				if err != nil {
 					return err
